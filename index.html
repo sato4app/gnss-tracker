@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1220">
+  <title>GNSS Tracker</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- 上部バー：接続 / 接続状態 / fix種別 / 最終受信経過 -->
+  <header id="topbar">
+    <button id="btn-connect" class="btn primary">接続</button>
+    <span id="conn-status" class="conn-status" data-state="disconnected">未接続</span>
+    <span id="fix-badge" class="fix-badge bad">No fix</span>
+    <span id="last-recv" class="last-recv mono">—</span>
+  </header>
+
+  <!-- 地図（メイン領域） -->
+  <div id="map"></div>
+
+  <!-- 地図上のミニコントロール -->
+  <div id="map-ctrl">
+    <button id="btn-follow" class="map-btn active" title="現在地に追従">追従</button>
+  </div>
+
+  <!-- 下部パネル（タブ切替） -->
+  <section id="panel">
+    <!-- 1. ライブ -->
+    <div class="tab-page" id="page-live">
+      <dl class="grid">
+        <div><dt>緯度</dt><dd id="lv-lat" class="mono">—</dd></div>
+        <div><dt>経度</dt><dd id="lv-lon" class="mono">—</dd></div>
+        <div><dt>標高(MSL)</dt><dd id="lv-alt" class="mono">—</dd></div>
+        <div><dt>推定水平精度</dt><dd id="lv-acc" class="mono">—</dd></div>
+        <div><dt>速度</dt><dd id="lv-speed" class="mono">—</dd></div>
+        <div><dt>進路</dt><dd id="lv-course" class="mono">—</dd></div>
+        <div><dt>衛星 使用/視野内</dt><dd id="lv-sats" class="mono">—</dd></div>
+        <div><dt>UTC</dt><dd id="lv-time" class="mono">—</dd></div>
+      </dl>
+      <div class="sub-head">系統別内訳（使用/視野内）</div>
+      <div id="lv-sys" class="sys-chips">—</div>
+      <div class="sub-head">DOP</div>
+      <div class="dop-rows">
+        <div class="dop-row"><span>PDOP</span><div class="bar"><i id="bar-pdop"></i></div><b id="lv-pdop" class="mono">—</b></div>
+        <div class="dop-row"><span>HDOP</span><div class="bar"><i id="bar-hdop"></i></div><b id="lv-hdop" class="mono">—</b></div>
+        <div class="dop-row"><span>VDOP</span><div class="bar"><i id="bar-vdop"></i></div><b id="lv-vdop" class="mono">—</b></div>
+      </div>
+    </div>
+
+    <!-- 2. 解析 -->
+    <div class="tab-page" id="page-analysis" hidden>
+      <div class="sub-head">スカイプロット（半径=仰角 / 角度=方位 / 大きさ=SNR / 塗り=使用中）</div>
+      <canvas id="sky-plot" class="sky-canvas"></canvas>
+      <div id="legend" class="legend"></div>
+      <div class="sub-head">SNR（C/N0）チャート</div>
+      <canvas id="snr-chart" class="snr-canvas"></canvas>
+      <div class="sub-head">DOP 詳細</div>
+      <dl class="grid">
+        <div><dt>PDOP</dt><dd id="an-pdop" class="mono">—</dd></div>
+        <div><dt>HDOP</dt><dd id="an-hdop" class="mono">—</dd></div>
+        <div><dt>VDOP</dt><dd id="an-vdop" class="mono">—</dd></div>
+        <div><dt>測位モード</dt><dd id="an-mode" class="mono">—</dd></div>
+        <div><dt>精度ソース</dt><dd id="an-accsrc" class="mono">—</dd></div>
+        <div><dt>GST σ(緯/経)</dt><dd id="an-gst" class="mono">—</dd></div>
+      </dl>
+    </div>
+
+    <!-- 3. 記録 -->
+    <div class="tab-page" id="page-record" hidden>
+      <div class="note">⚠ 記録は画面表示中のみ有効です（画面OFF/バックグラウンドでBLEが切断され、記録は一時停止します）</div>
+      <div class="rec-form">
+        <input id="rec-label" type="text" placeholder="ラベル（任意）">
+        <input id="rec-memo" type="text" placeholder="メモ（任意）">
+      </div>
+      <div class="rec-actions">
+        <button id="btn-snapshot" class="btn">📍 スナップショット保存</button>
+        <button id="btn-static" class="btn primary">⏺ 静的測位 開始</button>
+      </div>
+      <div id="static-live" class="static-live" hidden>
+        <dl class="grid">
+          <div><dt>収集点数</dt><dd id="st-count" class="mono">0</dd></div>
+          <div><dt>経過時間</dt><dd id="st-elapsed" class="mono">0 s</dd></div>
+          <div><dt>DRMS(暫定)</dt><dd id="st-drms" class="mono">—</dd></div>
+          <div><dt>CEP50(暫定)</dt><dd id="st-cep" class="mono">—</dd></div>
+        </dl>
+      </div>
+      <div class="sub-head">散布図（中心からの東西×南北オフセット）</div>
+      <canvas id="scatter" class="scatter-canvas"></canvas>
+      <div id="static-result" class="static-result"></div>
+      <div class="sub-head">記録一覧</div>
+      <ul id="session-list" class="session-list"></ul>
+    </div>
+
+    <!-- 4. 設定 -->
+    <div class="tab-page" id="page-settings" hidden>
+      <div class="sub-head">測位・記録</div>
+      <label class="set-row">UERE（HDOP×UERE 概算用）[m]
+        <input id="set-uere" type="number" min="1" max="30" step="0.5">
+      </label>
+      <label class="set-row">静的測位 収集時間 [秒]（0=無制限）
+        <input id="set-maxsec" type="number" min="0" step="10">
+      </label>
+      <label class="set-row">静的測位 収集エポック数（0=無制限）
+        <input id="set-maxepochs" type="number" min="0" step="10">
+      </label>
+      <div class="sub-head">地図</div>
+      <div class="set-row">地図種別
+        <span class="radio-group">
+          <label><input type="radio" name="maptype" value="std">標準</label>
+          <label><input type="radio" name="maptype" value="pale">淡色</label>
+          <label><input type="radio" name="maptype" value="photo">写真</label>
+        </span>
+      </div>
+      <label class="set-row">軌跡を表示
+        <input id="set-track" type="checkbox">
+      </label>
+      <div class="sub-head">オフライン地図タイル（tile_manifest.json）</div>
+      <div class="set-row">
+        <button id="btn-tiledl" class="btn">タイル事前ダウンロード</button>
+        <button id="btn-tiledl-cancel" class="btn" hidden>中止</button>
+      </div>
+      <div id="tiledl-progress" class="tiledl-progress"></div>
+      <div class="sub-head">開発</div>
+      <label class="set-row">モックNMEA配信（実機なしで動作確認）
+        <input id="set-mock" type="checkbox">
+      </label>
+      <div id="wakelock-state" class="note-dim">Wake Lock: —</div>
+    </div>
+  </section>
+
+  <!-- 下部タブバー -->
+  <nav id="tabbar">
+    <button class="tab active" data-page="live">ライブ</button>
+    <button class="tab" data-page="analysis">解析</button>
+    <button class="tab" data-page="record">記録</button>
+    <button class="tab" data-page="settings">設定</button>
+  </nav>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

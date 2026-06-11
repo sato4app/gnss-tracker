@@ -1,0 +1,537 @@
+// エントリ：各モジュールの結線。
+// データフロー: BLE/Mock → LineBuffer → nmea-parser → EpochAssembler
+//             → (地図 / ライブ表示 / 解析 / 記録) ※再描画は rAF でスロットリング
+import { LineBuffer } from './line-buffer.js';
+import { parseSentence, CONSTELLATION_COLORS, CONSTELLATION_LABELS } from './nmea-parser.js';
+import { EpochAssembler } from './epoch-assembler.js';
+import { NmeaBle } from './ble-client.js';
+import { MockFeeder } from './mock-feeder.js';
+import { estimateHorizontalAccuracy } from './accuracy.js';
+import { MapView } from './map.js';
+import { SkyPlotView } from './sky-plot.js';
+import { SnrChartView } from './snr-chart.js';
+import { ScatterPlotView } from './scatter-plot.js';
+import { Storage } from './storage.js';
+import { Recorder } from './recorder.js';
+import { exportCSV, exportGPX, exportJSON } from './exporter.js';
+import { WakeLockManager } from './wake-lock.js';
+import { TileCache } from './tile-cache.js';
+
+const $ = (id) => document.getElementById(id);
+
+// ---- 設定（IndexedDB settings ストアに永続化） ----
+const DEFAULT_SETTINGS = {
+  uere: 5, // HDOP×UERE 概算用 [m]
+  staticMaxSec: 60, // 静的測位の既定収集時間
+  staticMaxEpochs: 120, // 静的測位の既定収集エポック数
+  mapType: 'std',
+  trackEnabled: true,
+};
+
+async function main() {
+  const storage = new Storage();
+  await storage.init();
+
+  const settings = { ...DEFAULT_SETTINGS };
+  for (const key of Object.keys(DEFAULT_SETTINGS)) {
+    settings[key] = await storage.getSetting(key, DEFAULT_SETTINGS[key]);
+  }
+
+  // ---- ビュー ----
+  const mapView = new MapView($('map'), {
+    mapType: settings.mapType,
+    trackEnabled: settings.trackEnabled,
+    follow: true,
+  });
+  const skyView = new SkyPlotView($('sky-plot'));
+  const snrView = new SnrChartView($('snr-chart'));
+  const scatterView = new ScatterPlotView($('scatter'));
+  const wakeLock = new WakeLockManager({
+    onChange: (active, msg) => {
+      $('wakelock-state').textContent = `Wake Lock: ${msg}`;
+    },
+  });
+  const tileCache = new TileCache();
+
+  // ---- 記録 ----
+  const recorder = new Recorder(storage, {
+    onStaticUpdate: ({ count, elapsedSec, stats }) => {
+      $('st-count').textContent = String(count);
+      $('st-elapsed').textContent = `${Math.floor(elapsedSec)} s`;
+      $('st-drms').textContent = stats ? `${stats.drms.toFixed(2)} m` : '—';
+      $('st-cep').textContent = stats && stats.cep50 != null ? `${stats.cep50.toFixed(2)} m` : '—';
+      if (stats) scatterView.update(stats);
+    },
+    onStaticStop: async (session) => {
+      // 自動停止（N秒/Mエポック到達）でもUIを確実に戻す
+      await onStaticStopped(session);
+    },
+  });
+
+  // ---- エポック組み立て → 各表示の更新（rAF スロットリング） ----
+  let latestEpoch = null;
+  let renderQueued = false;
+
+  const assembler = new EpochAssembler({
+    onEpoch: (epoch) => {
+      latestEpoch = epoch;
+      recorder.addEpoch(epoch);
+      if (!renderQueued) {
+        renderQueued = true;
+        requestAnimationFrame(() => {
+          renderQueued = false;
+          if (latestEpoch) render(latestEpoch);
+        });
+      }
+    },
+  });
+
+  const lineBuffer = new LineBuffer();
+  let lastRxAt = null;
+
+  function handleFrame(frame) {
+    lastRxAt = Date.now();
+    for (const line of lineBuffer.push(frame)) {
+      assembler.add(parseSentence(line)); // チェックサム不正は valid:false → 黙って捨てる
+    }
+  }
+
+  // ---- 接続状態表示 ----
+  const STATUS_LABELS = {
+    disconnected: '未接続',
+    connecting: '接続処理中…',
+    reconnecting: '再接続中…',
+    connected: '接続中',
+    receiving: '受信中',
+    demo: 'モック配信中',
+    unsupported: 'BLE非対応',
+  };
+
+  let ble = null;
+  let mock = null;
+  let connState = 'disconnected';
+
+  function setConnStatus(state) {
+    connState = state;
+    const el = $('conn-status');
+    el.dataset.state = state;
+    el.textContent = STATUS_LABELS[state] || state;
+    $('btn-connect').textContent = state === 'disconnected' || state === 'unsupported' ? '接続' : '切断';
+  }
+
+  // 接続中＋データが流れていれば「受信中」へ昇格、最終受信経過も表示
+  setInterval(() => {
+    if (lastRxAt == null) {
+      $('last-recv').textContent = '—';
+      return;
+    }
+    const sec = Math.floor((Date.now() - lastRxAt) / 1000);
+    $('last-recv').textContent = `${sec}s前`;
+    if (connState === 'connected' && sec <= 3) setConnStatus('receiving');
+    else if (connState === 'receiving' && sec > 3) setConnStatus('connected');
+  }, 1000);
+
+  // ---- BLE 接続ボタン（requestDevice はユーザー操作内で呼ぶ） ----
+  $('btn-connect').addEventListener('click', async () => {
+    if (ble && ble.shouldRun) {
+      ble.disconnect(); // 手動切断（自動再接続しない）
+      ble = null;
+      assembler.flush();
+      setConnStatus('disconnected');
+      return;
+    }
+    const reason = NmeaBle.unavailableReason();
+    if (reason) {
+      alert(reason + '\n（実機なしの場合は設定タブの「モックNMEA配信」をご利用ください）');
+      return;
+    }
+    stopMock();
+    ble = new NmeaBle({
+      onFrame: handleFrame,
+      onStatus: (s) => {
+        // 受信中表示はタイマー側で管理するため connected を上書きしない
+        if (!(s === 'connected' && connState === 'receiving')) setConnStatus(s);
+      },
+    });
+    await ble.connect();
+    if (!ble.shouldRun) {
+      ble = null;
+      setConnStatus('disconnected');
+    }
+  });
+
+  // ---- モック（開発用） ----
+  function startMock() {
+    if (mock) return;
+    if (ble) {
+      ble.disconnect();
+      ble = null;
+    }
+    mock = new MockFeeder(handleFrame);
+    mock.start();
+    setConnStatus('demo');
+  }
+
+  function stopMock() {
+    if (!mock) return;
+    mock.stop();
+    mock = null;
+    assembler.flush();
+    if (!ble) setConnStatus('disconnected');
+    $('set-mock').checked = false;
+  }
+
+  $('set-mock').addEventListener('change', (e) => {
+    if (e.target.checked) startMock();
+    else stopMock();
+  });
+
+  // ---- fix 種別バッジ ----
+  const FIX_BADGE = {
+    0: { t: 'No fix', cls: 'bad' },
+    1: { t: 'GPS', cls: 'ok' },
+    2: { t: 'DGPS', cls: 'ok' },
+    4: { t: 'RTK Fixed', cls: 'good' },
+    5: { t: 'RTK Float', cls: 'warn' },
+    6: { t: '推測航法', cls: 'warn' },
+  };
+  const FIX_MODE = { 1: 'No fix', 2: '2D', 3: '3D' };
+
+  const fmt = (v, digits = 1, unit = '') => (v == null ? '—' : v.toFixed(digits) + unit);
+
+  // ---- 表示更新（1エポックごと。rAF 経由） ----
+  function render(epoch) {
+    // fix バッジ：GGA quality と GSA fixMode を組み合わせる
+    let badge;
+    if (epoch.fixQuality == null || epoch.fixQuality === 0) {
+      badge = { t: 'No fix', cls: 'bad' };
+    } else if (epoch.fixQuality === 1 && epoch.fixMode === 2) {
+      badge = { t: '2D', cls: 'warn' };
+    } else if (epoch.fixQuality === 1 && epoch.fixMode === 3) {
+      badge = { t: '3D', cls: 'ok' };
+    } else {
+      badge = FIX_BADGE[epoch.fixQuality] || { t: `fix${epoch.fixQuality}`, cls: 'ok' };
+    }
+    const badgeEl = $('fix-badge');
+    badgeEl.textContent = badge.t;
+    badgeEl.className = `fix-badge ${badge.cls}`;
+
+    // 水平精度（GST 優先 / HDOP×UERE フォールバック）
+    const acc = estimateHorizontalAccuracy(epoch, settings.uere);
+
+    // ライブタブ
+    $('lv-lat').textContent = epoch.lat != null ? epoch.lat.toFixed(6) : '—';
+    $('lv-lon').textContent = epoch.lon != null ? epoch.lon.toFixed(6) : '—';
+    $('lv-alt').textContent = fmt(epoch.altMSL, 1, ' m');
+    $('lv-acc').textContent = acc ? `±${acc.value.toFixed(1)} m (${acc.source})` : '—';
+    $('lv-speed').textContent = fmt(epoch.speedKmh, 1, ' km/h');
+    $('lv-course').textContent = fmt(epoch.course, 0, '°');
+    $('lv-sats').textContent =
+      epoch.satsUsed != null || epoch.satsInView != null
+        ? `${epoch.satsUsed ?? '—'} / ${epoch.satsInView ?? '—'}`
+        : '—';
+    $('lv-time').textContent = epoch.time?.str || '—';
+
+    // 系統別内訳チップ
+    const sysIds = new Set([...Object.keys(epoch.usedBySys || {}), ...Object.keys(epoch.inViewBySys || {})]);
+    if (sysIds.size) {
+      $('lv-sys').innerHTML = [...sysIds]
+        .map((sys) => {
+          const color = CONSTELLATION_COLORS[sys] || CONSTELLATION_COLORS.unknown;
+          const label = CONSTELLATION_LABELS[sys] || sys;
+          const used = epoch.usedBySys[sys] || 0;
+          const inView = epoch.inViewBySys[sys] || '—';
+          return `<span class="sys-chip"><i class="swatch" style="background:${color}"></i>${label} ${used}/${inView}</span>`;
+        })
+        .join('');
+    }
+
+    // DOP（数値＋バー。6以上で満タン扱い）
+    for (const k of ['pdop', 'hdop', 'vdop']) {
+      $(`lv-${k}`).textContent = fmt(epoch[k]);
+      $(`an-${k}`).textContent = fmt(epoch[k]);
+      const v = epoch[k];
+      const bar = $(`bar-${k}`);
+      if (v != null) {
+        bar.style.width = `${Math.min(v / 6, 1) * 100}%`;
+        bar.style.background = v < 2 ? 'var(--good)' : v < 4 ? 'var(--warn)' : 'var(--bad)';
+      } else {
+        bar.style.width = '0';
+      }
+    }
+
+    // 解析タブ
+    $('an-mode').textContent = FIX_MODE[epoch.fixMode] || '—';
+    $('an-accsrc').textContent = acc ? acc.source : '—';
+    $('an-gst').textContent =
+      epoch.latStd != null ? `${epoch.latStd.toFixed(2)} / ${epoch.lonStd.toFixed(2)} m` : '出力なし';
+    skyView.update(epoch);
+    snrView.update(epoch);
+
+    // 地図
+    if (epoch.lat != null && epoch.lon != null && epoch.fixQuality > 0) {
+      mapView.updatePosition(epoch.lat, epoch.lon, acc ? acc.value : null);
+    }
+  }
+
+  // ---- 凡例 ----
+  $('legend').innerHTML = Object.entries(CONSTELLATION_LABELS)
+    .filter(([id]) => id !== 'unknown' && id !== 'mixed')
+    .map(([id, label]) => `<span><i class="swatch" style="background:${CONSTELLATION_COLORS[id]}"></i>${label}</span>`)
+    .join('');
+
+  // ---- タブ切替 ----
+  document.querySelectorAll('#tabbar .tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#tabbar .tab').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.tab-page').forEach((p) => {
+        p.hidden = p.id !== `page-${btn.dataset.page}`;
+      });
+      if (btn.dataset.page === 'record') refreshSessionList();
+      mapView.invalidateSize();
+    });
+  });
+
+  // ---- 追従トグル ----
+  $('btn-follow').addEventListener('click', () => {
+    const on = !mapView.follow;
+    mapView.setFollow(on);
+    $('btn-follow').classList.toggle('active', on);
+  });
+  mapView.onFollowChange = (on) => $('btn-follow').classList.toggle('active', on);
+
+  // ---- 記録：スナップショット ----
+  $('btn-snapshot').addEventListener('click', async () => {
+    try {
+      const session = await recorder.saveSnapshot({
+        label: $('rec-label').value.trim(),
+        memo: $('rec-memo').value.trim(),
+      });
+      const s = session.summary;
+      mapView.addRecordMarker(s.lat, s.lon, session.label, 'snapshot');
+      $('static-result').textContent = `スナップショット保存: ${session.label}\n(${s.lat.toFixed(6)}, ${s.lon.toFixed(6)})`;
+      $('rec-label').value = '';
+      $('rec-memo').value = '';
+      await refreshSessionList();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+
+  // ---- 記録：静的測位 ----
+  $('btn-static').addEventListener('click', async () => {
+    if (recorder.isStaticRunning) {
+      await recorder.stopStatic(); // onStaticStop 経由で UI 更新
+      return;
+    }
+    if (!latestEpoch || latestEpoch.lat == null) {
+      alert('有効な測位データがありません。接続（またはモック）を開始してください。');
+      return;
+    }
+    recorder.startStatic({
+      label: $('rec-label').value.trim(),
+      memo: $('rec-memo').value.trim(),
+      maxSec: settings.staticMaxSec,
+      maxEpochs: settings.staticMaxEpochs,
+    });
+    $('btn-static').textContent = '⏹ 静的測位 停止';
+    $('btn-static').classList.add('danger');
+    $('static-live').hidden = false;
+    $('static-result').textContent = '';
+    scatterView.clear();
+    await wakeLock.acquire(); // 記録中は画面を維持（仕様 3-7）
+  });
+
+  async function onStaticStopped(session) {
+    $('btn-static').textContent = '⏺ 静的測位 開始';
+    $('btn-static').classList.remove('danger');
+    $('static-live').hidden = true;
+    $('rec-label').value = '';
+    $('rec-memo').value = '';
+    await wakeLock.release();
+
+    const points = await storage.getPointsBySession(session.id);
+    const stats = points[0]?.stats;
+    if (stats) {
+      scatterView.update(stats);
+      mapView.addRecordMarker(stats.center.lat, stats.center.lon, session.label, 'static');
+      $('static-result').textContent = formatStats(session, stats);
+    } else {
+      $('static-result').textContent = '有効なエポックが収集できませんでした';
+    }
+    await refreshSessionList();
+  }
+
+  function formatStats(session, st) {
+    const fixLine = Object.entries(st.fixCounts).map(([q, n]) => `fix${q}:${n}`).join(' ');
+    return [
+      `【${session.label}】 収集 ${st.count} エポック`,
+      `中心: ${st.center.lat.toFixed(7)}, ${st.center.lon.toFixed(7)}（中央値: ${st.median.lat.toFixed(7)}, ${st.median.lon.toFixed(7)}）`,
+      `標準偏差: 東西 ${st.stdEastM.toFixed(2)} m / 南北 ${st.stdNorthM.toFixed(2)} m`,
+      `DRMS ${st.drms.toFixed(2)} m / 2DRMS ${st.drms2.toFixed(2)} m`,
+      `CEP50 ${st.cep50?.toFixed(2)} m / CEP95 ${st.cep95?.toFixed(2)} m`,
+      `標高: 平均 ${st.altMean != null ? st.altMean.toFixed(1) : '—'} m ± ${st.altStd != null ? st.altStd.toFixed(1) : '—'} m`,
+      `fix内訳: ${fixLine}　平均HDOP ${st.avgHdop != null ? st.avgHdop.toFixed(1) : '—'}　平均衛星数 ${st.avgSats != null ? st.avgSats.toFixed(1) : '—'}`,
+    ].join('\n');
+  }
+
+  // ---- 記録一覧 ----
+  async function refreshSessionList() {
+    const sessions = await storage.getSessions();
+    const ul = $('session-list');
+    ul.innerHTML = '';
+    if (!sessions.length) {
+      ul.innerHTML = '<li class="s-sub">記録はまだありません</li>';
+      return;
+    }
+    for (const session of sessions) {
+      const li = document.createElement('li');
+      const typeLabel = session.type === 'static' ? '静的' : '地点';
+      const sub =
+        session.type === 'static'
+          ? `${new Date(session.createdAt).toLocaleString('ja-JP')}　${session.summary?.count ?? 0}点` +
+            (session.summary?.drms != null ? `　DRMS ${session.summary.drms.toFixed(2)}m` : '')
+          : `${new Date(session.createdAt).toLocaleString('ja-JP')}` +
+            (session.summary?.lat != null ? `　(${session.summary.lat.toFixed(5)}, ${session.summary.lon.toFixed(5)})` : '');
+      li.innerHTML = `
+        <div class="s-head">
+          <span class="s-type ${session.type}">${typeLabel}</span>
+          <span class="s-label">${escapeHtml(session.label)}</span>
+        </div>
+        <div class="s-sub">${sub}</div>
+        <div class="s-actions">
+          <button class="btn" data-act="map">地図</button>
+          <button class="btn" data-act="csv">CSV</button>
+          <button class="btn" data-act="gpx">GPX</button>
+          <button class="btn" data-act="json">JSON</button>
+          <button class="btn danger" data-act="del">削除</button>
+        </div>`;
+      li.querySelector('.s-actions').addEventListener('click', async (ev) => {
+        const act = ev.target.dataset?.act;
+        if (!act) return;
+        if (act === 'del') {
+          if (!confirm(`「${session.label}」を削除しますか？`)) return;
+          await storage.deleteSession(session.id);
+          await refreshSessionList();
+          return;
+        }
+        if (act === 'map') {
+          mapView.showSessionOnMap(session);
+          // 静的測位は散布図・集計も再表示
+          if (session.type === 'static') {
+            const pts = await storage.getPointsBySession(session.id);
+            if (pts[0]?.stats) {
+              scatterView.update(pts[0].stats);
+              $('static-result').textContent = formatStats(session, pts[0].stats);
+            }
+          }
+          return;
+        }
+        const points = await storage.getPointsBySession(session.id);
+        const point = points[0] || null;
+        if (act === 'csv') exportCSV(session, point);
+        else if (act === 'gpx') exportGPX(session, point);
+        else if (act === 'json') exportJSON(session, point);
+      });
+      ul.appendChild(li);
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // ---- 画面 OFF / バックグラウンド → 記録一時停止（仕様 3-7） ----
+  document.addEventListener('visibilitychange', () => {
+    recorder.setPaused(document.hidden);
+    if (!document.hidden) mapView.invalidateSize();
+  });
+
+  // ---- 設定タブ ----
+  $('set-uere').value = settings.uere;
+  $('set-maxsec').value = settings.staticMaxSec;
+  $('set-maxepochs').value = settings.staticMaxEpochs;
+  $('set-track').checked = settings.trackEnabled;
+  document.querySelector(`input[name="maptype"][value="${settings.mapType}"]`).checked = true;
+
+  $('set-uere').addEventListener('change', async (e) => {
+    settings.uere = Math.max(1, +e.target.value || DEFAULT_SETTINGS.uere);
+    await storage.setSetting('uere', settings.uere);
+  });
+  $('set-maxsec').addEventListener('change', async (e) => {
+    settings.staticMaxSec = Math.max(0, +e.target.value || 0);
+    await storage.setSetting('staticMaxSec', settings.staticMaxSec);
+  });
+  $('set-maxepochs').addEventListener('change', async (e) => {
+    settings.staticMaxEpochs = Math.max(0, +e.target.value || 0);
+    await storage.setSetting('staticMaxEpochs', settings.staticMaxEpochs);
+  });
+  $('set-track').addEventListener('change', async (e) => {
+    settings.trackEnabled = e.target.checked;
+    mapView.setTrackEnabled(settings.trackEnabled);
+    await storage.setSetting('trackEnabled', settings.trackEnabled);
+  });
+  document.querySelectorAll('input[name="maptype"]').forEach((radio) => {
+    radio.addEventListener('change', async (e) => {
+      settings.mapType = e.target.value;
+      mapView.setBaseLayer(settings.mapType);
+      await storage.setSetting('mapType', settings.mapType);
+    });
+  });
+
+  // ---- タイル事前ダウンロード ----
+  $('btn-tiledl').addEventListener('click', async () => {
+    const progressEl = $('tiledl-progress');
+    let manifest;
+    try {
+      manifest = await tileCache.loadManifest();
+    } catch (e) {
+      progressEl.textContent = `マニフェスト読込失敗: ${e.message}`;
+      return;
+    }
+    const total = tileCache.countTiles(manifest);
+    if (!total) {
+      progressEl.textContent = 'マニフェストにタイルがありません';
+      return;
+    }
+    if (!confirm(`${total} 枚のタイルをダウンロードしますか？（${GSI_LABEL[settings.mapType] || '標準地図'}）`)) return;
+
+    $('btn-tiledl').disabled = true;
+    $('btn-tiledl-cancel').hidden = false;
+    try {
+      const result = await tileCache.download(manifest, {
+        mapType: settings.mapType,
+        onProgress: ({ done, failed }) => {
+          progressEl.textContent = `ダウンロード中… ${done}/${total}${failed ? `（失敗 ${failed}）` : ''}`;
+        },
+      });
+      progressEl.textContent = result.cancelled
+        ? `中止しました（${result.done}/${result.total}）`
+        : `完了: ${result.done}/${result.total}${result.failed ? `（失敗 ${result.failed}）` : ''}`;
+    } catch (e) {
+      progressEl.textContent = `エラー: ${e.message}`;
+    } finally {
+      $('btn-tiledl').disabled = false;
+      $('btn-tiledl-cancel').hidden = true;
+    }
+  });
+  $('btn-tiledl-cancel').addEventListener('click', () => tileCache.cancel());
+
+  const GSI_LABEL = { std: '標準地図', pale: '淡色地図', photo: '写真' };
+
+  // キャッシュ済みタイル数の目安を表示
+  tileCache.cachedCount().then((n) => {
+    if (n) $('tiledl-progress').textContent = `キャッシュ済みタイル: ${n} 枚`;
+  });
+
+  // ---- Service Worker 登録（PWA / オフライン） ----
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch((e) => {
+      console.warn('Service Worker 登録失敗:', e);
+    });
+  }
+
+  setConnStatus('disconnected');
+}
+
+main();
