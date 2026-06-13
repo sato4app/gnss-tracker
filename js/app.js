@@ -508,6 +508,17 @@ async function main() {
       progressEl.textContent = result.cancelled
         ? `中止しました（${result.done}/${result.total}）`
         : `完了: ${result.done}/${result.total}${result.failed ? `（失敗 ${result.failed}）` : ''}`;
+      // 1枚でも取得できたら、その時点の data/tile_manifest.json の version を記録する
+      if (result.done > 0) {
+        await storage.setSetting('tileCacheMeta', {
+          version: manifest.version ?? null,
+          mapType: settings.mapType,
+          downloadedAt: Date.now(),
+          downloaded: result.done,
+          cancelled: result.cancelled,
+        });
+      }
+      await refreshTileStatus();
     } catch (e) {
       progressEl.textContent = `エラー: ${e.message}`;
     } finally {
@@ -519,10 +530,24 @@ async function main() {
 
   const GSI_LABEL = { std: '標準地図', pale: '淡色地図', photo: '写真' };
 
-  // キャッシュ済みタイル数の目安を表示
-  tileCache.cachedCount().then((n) => {
-    if (n) $('tiledl-progress').textContent = `キャッシュ済みタイル: ${n} 枚`;
-  });
+  // ダウンロード済みタイルの枚数と、data/tile_manifest.json の version を表示。
+  // version・地図種別・取得日時はダウンロード時に IndexedDB(settings) へ記録した値を使う
+  // （オフライン起動でもネットワーク無しで表示できる）。枚数は実キャッシュ件数。
+  async function refreshTileStatus() {
+    const count = await tileCache.cachedCount();
+    const meta = await storage.getSetting('tileCacheMeta', null);
+    const el = $('tile-status');
+    if (!count) {
+      el.textContent = 'ダウンロード済みタイル: なし';
+      return;
+    }
+    let text = `ダウンロード済みタイル: ${count} 枚`;
+    if (meta?.version) text += ` ／ version ${meta.version}`;
+    if (meta?.mapType) text += `（${GSI_LABEL[meta.mapType] || meta.mapType}）`;
+    if (meta?.downloadedAt) text += `　${new Date(meta.downloadedAt).toLocaleString('ja-JP')} 取得`;
+    el.textContent = text;
+  }
+  refreshTileStatus();
 
   // ---- Service Worker 登録（PWA / オフライン） ----
   if ('serviceWorker' in navigator) {
