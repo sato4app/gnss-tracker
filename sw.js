@@ -1,7 +1,7 @@
 // Service Worker：アプリシェルのプリキャッシュ＋地理院地図タイルのキャッシュ。
 // タイルは cache-first（オフラインでもキャッシュ済範囲の地図が出る）。
 // タイルキャッシュ名は js/tile-cache.js の事前ダウンロードと共有する。
-const SHELL_CACHE = 'gnss-shell-v1';
+const SHELL_CACHE = 'gnss-shell-v2';
 const TILE_CACHE = 'gsi-tiles';
 
 const APP_SHELL = [
@@ -34,6 +34,7 @@ const APP_SHELL = [
   './vendor/leaflet/images/layers-2x.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
+  './icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {
