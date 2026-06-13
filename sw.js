@@ -86,7 +86,7 @@ self.addEventListener('fetch', (event) => {
         (hit) =>
           hit ||
           fetch(event.request).then((res) => {
-            // tile_manifest.json など後から置かれるファイルもシェルキャッシュに足す
+            // data/tile_manifest.json など後から取得するファイルもシェルキャッシュに足す
             if (res.ok) {
               const copy = res.clone();
               caches.open(SHELL_CACHE).then((cache) => cache.put(event.request, copy));

@@ -1,4 +1,5 @@
-// tile_manifest.json（Format A：座標リスト JSON 方式）による地図タイルの事前ダウンロード。
+// data/tile_manifest.json（Format A：座標リスト JSON 方式）による地図タイルの事前ダウンロード。
+// マニフェストは data/ を唯一の置き場とし、ルート直下には複製を置かない（重複回避）。
 // マニフェスト記載タイルを Cache API（sw.js と同じ 'gsi-tiles' キャッシュ）へ一括取得する。
 // オフライン時は SW がこのキャッシュからタイルを返す。
 import { GSI_LAYERS } from './map.js';
@@ -16,9 +17,9 @@ export class TileCache {
 
   // マニフェスト形式:
   // { layers: { <key>: { z: 17, tiles: [[x, y], ...] }, ... } }
-  async loadManifest(url = 'tile_manifest.json') {
+  async loadManifest(url = 'data/tile_manifest.json') {
     const res = await fetch(url, { cache: 'no-cache' });
-    if (!res.ok) throw new Error(`tile_manifest.json を取得できません (${res.status})`);
+    if (!res.ok) throw new Error(`${url} を取得できません (${res.status})`);
     return res.json();
   }
 
