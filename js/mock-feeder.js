@@ -1,8 +1,12 @@
 // 開発用：Pico がなくても動作確認できる合成NMEA生成器。
 // チェックサムは計算して付与するのでパーサで検証が通る。
-// 1Hzで GNRMC/GNGGA/GNGSA(×2)/GxGSV/GNVTG/GNGST を流す。たまにフレームを
+// 1Hzで GNRMC/GNGGA/GNGSA(×N)/GxGSV/GNVTG/GNGST を流す。たまにフレームを
 // 途中で割って LineBuffer の断片結合も試せるようにしている。
 // 実 BLE(NmeaBle) と同じ onFrame I/F で差し替え可能。
+//
+// UART 38400 化（9600→38400）により、マルチGNSSのフル GSV が間引かれず届くように
+// なった想定に合わせ、GPS/GLONASS/Galileo/BeiDou/QZSS の5系統を生成して
+// スカイプロット・SNRチャートを実機相当のデータ量で検証できるようにしている。
 
 function nmeaLine(body) {
   let cs = 0;
@@ -77,7 +81,7 @@ export class MockFeeder {
     const ns = lat >= 0 ? 'N' : 'S';
     const ew = lon >= 0 ? 'E' : 'W';
 
-    const numSV = 9 + Math.floor(Math.random() * 5);
+    const numSV = 18 + Math.floor(Math.random() * 5); // 全GNSS（38400でフル受信）想定の使用衛星数
     const hdop = (0.7 + Math.random() * 0.7).toFixed(1);
     const pdop = (1.0 + Math.random() * 0.9).toFixed(1);
     const vdop = (0.9 + Math.random() * 0.8).toFixed(1);
@@ -91,11 +95,17 @@ export class MockFeeder {
       const sd = () => (0.8 + Math.random() * 1.5).toFixed(2);
       lines.push(nmeaLine(`GNGST,${time},2.5,,,,${sd()},${sd()},${sd()}`));
     }
+    // 系統別 GSA（使用衛星 PRN は系統間で重複しないよう割当）
     lines.push(gsa([1, 8, 11, 17, 19, 22, 28], pdop, hdop, vdop, 1)); // GPS
     lines.push(gsa([65, 72, 81], pdop, hdop, vdop, 2)); // GLONASS
+    lines.push(gsa([2, 5, 24, 31], pdop, hdop, vdop, 3)); // Galileo
+    lines.push(gsa([14, 27, 33, 44], pdop, hdop, vdop, 4)); // BeiDou
+    // 系統別 GSV（[prn, 仰角, 方位]）
     lines.push(...gsvLines('GP', [[1, 55, 120], [8, 40, 200], [11, 30, 75], [17, 65, 310], [19, 22, 45], [22, 48, 160], [28, 15, 280]]));
+    lines.push(...gsvLines('GL', [[65, 35, 90], [72, 50, 330], [81, 20, 15]])); // GLONASS
+    lines.push(...gsvLines('GA', [[2, 62, 45], [5, 28, 130], [24, 47, 250], [31, 18, 300]])); // Galileo
+    lines.push(...gsvLines('GB', [[14, 70, 200], [27, 33, 20], [33, 25, 160], [44, 52, 280]])); // BeiDou
     lines.push(...gsvLines('GQ', [[193, 70, 150], [194, 60, 210]])); // QZSS（みちびき）
-    lines.push(...gsvLines('GL', [[65, 35, 90], [72, 50, 330], [81, 20, 15]]));
 
     const text = lines.join('\r\n') + '\r\n';
 
