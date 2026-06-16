@@ -12,26 +12,39 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <!-- 上部バー：接続 / 接続状態 / fix種別 / 最終受信経過 -->
-  <header id="topbar">
-    <button id="btn-connect" class="btn primary">接続</button>
-    <span id="conn-status" class="conn-status" data-state="disconnected">未接続</span>
-    <span id="fix-badge" class="fix-badge bad">No fix</span>
-    <span id="last-recv" class="last-recv mono">—</span>
-  </header>
+  <!-- メイン：地図（全画面） -->
+  <div id="content">
+    <div id="map"></div>
 
-  <!-- 地図（メイン領域） -->
-  <div id="map"></div>
+    <!-- 地図上のミニコントロール -->
+    <div id="map-ctrl">
+      <button id="btn-follow" class="map-btn active" title="現在地に追従">追従</button>
+    </div>
 
-  <!-- 地図上のミニコントロール -->
-  <div id="map-ctrl">
-    <button id="btn-follow" class="map-btn active" title="現在地に追従">追従</button>
-  </div>
+    <!-- オーバーレイ（下部ボタンで開く情報パネル。画面の8〜9割を覆う） -->
+    <div id="overlay" hidden>
+      <div class="overlay-sheet">
+        <header class="overlay-header">
+          <span id="overlay-title" class="overlay-title">—</span>
+          <button id="overlay-close" class="overlay-close" title="閉じる">✕</button>
+        </header>
+        <div class="overlay-body">
 
-  <!-- 下部パネル（タブ切替） -->
-  <section id="panel">
+    <!-- 0. 接続 -->
+    <div class="tab-page" id="page-connect" hidden>
+      <div class="conn-bar">
+        <button id="btn-connect" class="btn primary">接続</button>
+        <span id="conn-status" class="conn-status" data-state="disconnected">未接続</span>
+      </div>
+      <dl class="grid">
+        <div><dt>測位状態</dt><dd><span id="fix-badge" class="fix-badge bad">No fix</span></dd></div>
+        <div><dt>最終受信</dt><dd id="last-recv" class="mono">—</dd></div>
+      </dl>
+      <div class="note-dim">BLE（Bluetooth）で GNSS レシーバへ接続します。実機がない場合は「設定」タブの「モックNMEA配信」をご利用ください。</div>
+    </div>
+
     <!-- 1. ライブ -->
-    <div class="tab-page" id="page-live">
+    <div class="tab-page" id="page-live" hidden>
       <dl class="grid">
         <div><dt>緯度</dt><dd id="lv-lat" class="mono">—</dd></div>
         <div><dt>経度</dt><dd id="lv-lon" class="mono">—</dd></div>
@@ -132,11 +145,16 @@
       </label>
       <div id="wakelock-state" class="note-dim">Wake Lock: —</div>
     </div>
-  </section>
 
-  <!-- 下部タブバー -->
+        </div><!-- /overlay-body -->
+      </div><!-- /overlay-sheet -->
+    </div><!-- /overlay -->
+  </div><!-- /content -->
+
+  <!-- 下部ボタンバー -->
   <nav id="tabbar">
-    <button class="tab active" data-page="live">ライブ</button>
+    <button class="tab" data-page="connect"><span id="conn-dot" class="conn-dot" data-state="disconnected"></span>接続</button>
+    <button class="tab" data-page="live">ライブ</button>
     <button class="tab" data-page="analysis">解析</button>
     <button class="tab" data-page="record">記録</button>
     <button class="tab" data-page="settings">設定</button>

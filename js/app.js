@@ -117,6 +117,8 @@ async function main() {
     el.dataset.state = state;
     el.textContent = STATUS_LABELS[state] || state;
     $('btn-connect').textContent = state === 'disconnected' || state === 'unsupported' ? '接続' : '切断';
+    // 地図のみのメイン画面でも接続状態が分かるよう、下部「接続」ボタンのドットへ反映
+    $('conn-dot').dataset.state = state;
   }
 
   // 接続中＋データが流れていれば「受信中」へ昇格、最終受信経過も表示
@@ -280,16 +282,42 @@ async function main() {
     .map(([id, label]) => `<span><i class="swatch" style="background:${CONSTELLATION_COLORS[id]}"></i>${label}</span>`)
     .join('');
 
-  // ---- タブ切替 ----
+  // ---- 下部ボタン → オーバーレイ開閉 ----
+  const PAGE_TITLES = { connect: '接続', live: 'ライブ', analysis: '解析', record: '記録', settings: '設定' };
+  const overlayEl = $('overlay');
+  let activePage = null;
+
+  function openOverlay(page) {
+    activePage = page;
+    document.querySelectorAll('.tab-page').forEach((p) => {
+      p.hidden = p.id !== `page-${page}`;
+    });
+    $('overlay-title').textContent = PAGE_TITLES[page] || '';
+    overlayEl.hidden = false;
+    document.querySelectorAll('#tabbar .tab').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+    if (page === 'record') refreshSessionList();
+    // 表示直後はキャンバスのサイズが確定しているので、最新エポックで即再描画する
+    if (latestEpoch) requestAnimationFrame(() => latestEpoch && render(latestEpoch));
+  }
+
+  function closeOverlay() {
+    overlayEl.hidden = true;
+    activePage = null;
+    document.querySelectorAll('#tabbar .tab').forEach((b) => b.classList.remove('active'));
+  }
+
   document.querySelectorAll('#tabbar .tab').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('#tabbar .tab').forEach((b) => b.classList.toggle('active', b === btn));
-      document.querySelectorAll('.tab-page').forEach((p) => {
-        p.hidden = p.id !== `page-${btn.dataset.page}`;
-      });
-      if (btn.dataset.page === 'record') refreshSessionList();
-      mapView.invalidateSize();
+      const page = btn.dataset.page;
+      if (activePage === page) closeOverlay(); // 同じボタンの再タップで閉じる
+      else openOverlay(page);
     });
+  });
+
+  $('overlay-close').addEventListener('click', closeOverlay);
+  // シート外（暗転部分）のタップで閉じる
+  overlayEl.addEventListener('click', (e) => {
+    if (e.target === overlayEl) closeOverlay();
   });
 
   // ---- 追従トグル ----
