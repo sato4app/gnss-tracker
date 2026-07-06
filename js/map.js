@@ -110,10 +110,6 @@ export class MapView {
     if (this.follow) this.map.panTo(ll, { animate: false });
   }
 
-  clearTrack() {
-    this.track.setLatLngs([]);
-  }
-
   // 記録地点マーカー（snapshot=橙 / static=緑）
   addRecordMarker(lat, lon, label, type) {
     const color = type === 'static' ? '#36c98d' : '#f0a93a';
@@ -126,10 +122,6 @@ export class MapView {
     }).addTo(this.recordLayer);
     if (label) m.bindPopup(label);
     return m;
-  }
-
-  clearRecordMarkers() {
-    this.recordLayer.clearLayers();
   }
 
   // 記録一覧から選んだセッションを地図に表示する

@@ -1,7 +1,7 @@
 // Service Worker：アプリシェルのプリキャッシュ＋地理院地図タイルのキャッシュ。
 // タイルは cache-first（オフラインでもキャッシュ済範囲の地図が出る）。
 // タイルキャッシュ名は js/tile-cache.js の事前ダウンロードと共有する。
-const SHELL_CACHE = 'gnss-shell-v3';
+const SHELL_CACHE = 'gnss-shell-v4';
 const TILE_CACHE = 'gsi-tiles';
 
 const APP_SHELL = [
@@ -16,6 +16,7 @@ const APP_SHELL = [
   './js/epoch-assembler.js',
   './js/accuracy.js',
   './js/map.js',
+  './js/canvas-view.js',
   './js/sky-plot.js',
   './js/snr-chart.js',
   './js/scatter-plot.js',
@@ -25,6 +26,9 @@ const APP_SHELL = [
   './js/wake-lock.js',
   './js/tile-cache.js',
   './js/mock-feeder.js',
+  './js/format.js',
+  './js/settings-ui.js',
+  './js/tile-ui.js',
   './vendor/leaflet/leaflet.js',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/images/marker-icon.png',

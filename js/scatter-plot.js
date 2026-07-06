@@ -1,36 +1,24 @@
 // 静的測位の散布図：中心からの東西(E)×南北(N)オフセット [m] を描画。
 // CEP50 / DRMS の円も重ねて表示する。
-export class ScatterPlotView {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
-    this._resize();
-    window.addEventListener('resize', () => {
-      this._resize();
-      if (this._last) this.update(this._last);
-    });
-  }
+import { CanvasView } from './canvas-view.js';
 
-  _resize() {
-    const size = Math.min(this.canvas.clientWidth || 280, 360);
-    const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = size * dpr;
-    this.canvas.height = size * dpr;
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this.size = size;
+export class ScatterPlotView extends CanvasView {
+  _computeSize() {
+    const s = Math.min(this.canvas.clientWidth || 280, 360);
+    return { w: s, h: s };
   }
 
   clear() {
     this._last = null;
-    this.ctx.clearRect(0, 0, this.size, this.size);
+    this.ctx.clearRect(0, 0, this.w, this.h);
   }
 
   // stats: computeStaticStats の戻り値（offsets / cep50 / drms を使用）
   update(stats) {
     this._last = stats;
-    if (this.canvas.clientWidth && Math.min(this.canvas.clientWidth, 360) !== this.size) this._resize();
+    this._syncSize();
     const ctx = this.ctx;
-    const S = this.size;
+    const S = this.w;
     const cx = S / 2;
     const cy = S / 2;
     ctx.clearRect(0, 0, S, S);

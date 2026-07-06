@@ -1,34 +1,19 @@
 // スカイプロット：仰角（中心90°→外周0°）と方位角（北を上、時計回り）で衛星を配置。
 // 使用中＝塗りつぶし、可視のみ＝中抜き。円の大きさ＝SNR。色＝コンステレーション。
 import { CONSTELLATION_COLORS } from './nmea-parser.js';
+import { CanvasView } from './canvas-view.js';
 
-export class SkyPlotView {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
-    this._resize();
-    window.addEventListener('resize', () => {
-      this._resize();
-      if (this._last) this.update(this._last);
-    });
-  }
-
-  _resize() {
-    const size = Math.min(this.canvas.clientWidth || 320, this.canvas.clientHeight || 320);
-    const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = size * dpr;
-    this.canvas.height = size * dpr;
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this.size = size;
+export class SkyPlotView extends CanvasView {
+  _computeSize() {
+    const s = Math.min(this.canvas.clientWidth || 320, this.canvas.clientHeight || 320);
+    return { w: s, h: s };
   }
 
   update(epoch) {
     this._last = epoch;
-    if (this.canvas.clientWidth && Math.min(this.canvas.clientWidth, this.canvas.clientHeight || this.canvas.clientWidth) !== this.size) {
-      this._resize();
-    }
+    this._syncSize();
     const ctx = this.ctx;
-    const S = this.size;
+    const S = this.w;
     const cx = S / 2;
     const cy = S / 2;
     const R = S / 2 - 18;

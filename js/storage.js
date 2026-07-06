@@ -62,10 +62,6 @@ export class Storage {
     return all.sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  async getSession(id) {
-    return reqToPromise(this.db.transaction('sessions').objectStore('sessions').get(id));
-  }
-
   // セッションと紐付く地点をまとめて削除
   async deleteSession(id) {
     const points = await this.getPointsBySession(id);

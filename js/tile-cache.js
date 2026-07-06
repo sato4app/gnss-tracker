@@ -96,9 +96,4 @@ export class TileCache {
     const keys = await cache.keys();
     return keys.length;
   }
-
-  async clear() {
-    if (!TileCache.isSupported()) return;
-    await caches.delete(TILE_CACHE_NAME);
-  }
 }

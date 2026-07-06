@@ -1,14 +1,15 @@
 // NMEA 0183 パーサ（GGA / RMC / GSA / GSV / VTG / GST）＋チェックサム検証
 // マルチGNSS（GP/GL/GA/GB/BD/GQ/GN）対応。
 
-export const CONSTELLATIONS = {
-  GP: { id: 'gps', label: 'GPS' },
-  GL: { id: 'glonass', label: 'GLONASS' },
-  GA: { id: 'galileo', label: 'Galileo' },
-  GB: { id: 'beidou', label: 'BeiDou' },
-  BD: { id: 'beidou', label: 'BeiDou' },
-  GQ: { id: 'qzss', label: 'QZSS' },
-  GN: { id: 'mixed', label: 'Mixed' },
+// トーカーID → コンステレーション識別子（表示名は CONSTELLATION_LABELS 側に集約）
+const TALKER_CONSTELLATION = {
+  GP: 'gps',
+  GL: 'glonass',
+  GA: 'galileo',
+  GB: 'beidou',
+  BD: 'beidou',
+  GQ: 'qzss',
+  GN: 'mixed',
 };
 
 // スカイプロット・SNR・凡例で共有する色（css/style.css の --c-* と一致させること）
@@ -35,8 +36,8 @@ export const CONSTELLATION_LABELS = {
 // GSA の systemId（NMEA 4.10+）→ コンステレーション
 const SYSTEM_ID = { '1': 'gps', '2': 'glonass', '3': 'galileo', '4': 'beidou', '5': 'qzss' };
 
-export function constellationFromTalker(talker) {
-  return (CONSTELLATIONS[talker] || CONSTELLATIONS.GN).id;
+function constellationFromTalker(talker) {
+  return TALKER_CONSTELLATION[talker] || TALKER_CONSTELLATION.GN;
 }
 
 // チェックサム検証：$ と * の間の全文字を XOR し、* の後ろの16進2桁と比較
