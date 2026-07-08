@@ -1,6 +1,19 @@
 // Canvas 系ビュー（スカイプロット / SNR / 散布図）の共通土台。
 // ctx 取得・devicePixelRatio 対応のリサイズ・リサイズ時の自動再描画をまとめる。
 // サブクラスは _computeSize() で論理サイズ [CSS px] を返し、update() を実装する。
+
+// 衛星データが来ない間、直前フレームを保持する上限 [ms]。超過でクリア（sky/snr 共通）
+export const HOLD_MS = 8000;
+
+// キャリーフォワード判定（純粋関数）。
+// hasSats: 今回のエポックに描画可能な衛星データがあるか
+// ageMs:   最後に有効データを受けてからの経過ms（未受信は Infinity）
+// 返り値: 'draw'（全描画）| 'hold'（前フレーム保持・何もしない）| 'clear'（クリア）
+export function holdDecision(hasSats, ageMs, holdMs) {
+  if (hasSats) return 'draw';
+  return ageMs <= holdMs ? 'hold' : 'clear';
+}
+
 export class CanvasView {
   constructor(canvas) {
     this.canvas = canvas;

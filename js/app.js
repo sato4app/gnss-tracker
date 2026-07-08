@@ -16,7 +16,7 @@ import { Recorder } from './recorder.js';
 import { exportCSV, exportGPX, exportJSON } from './exporter.js';
 import { WakeLockManager } from './wake-lock.js';
 import { TileCache } from './tile-cache.js';
-import { fmt, escapeHtml, FIX_MODE, fixBadge, formatStats, sessionSubText } from './format.js';
+import { fmt, escapeHtml, FIX_MODE, fixBadge, formatStats, sessionSubText, nextPointLabel } from './format.js';
 import { initSettingsUI } from './settings-ui.js';
 import { initTileUI } from './tile-ui.js';
 
@@ -25,8 +25,10 @@ const $ = (id) => document.getElementById(id);
 // ---- 設定（IndexedDB settings ストアに永続化） ----
 const DEFAULT_SETTINGS = {
   uere: 5, // HDOP×UERE 概算用 [m]
-  staticMaxSec: 60, // 静的測位の既定収集時間
-  staticMaxEpochs: 120, // 静的測位の既定収集エポック数
+  staticMaxSec: 60, // 静的測位の上限時間（タイムアウト）
+  staticMaxEpochs: 120, // 静的測位の上限エポック数
+  staticAutoStop: true, // 収束（中心・DRMS横ばい）による自動停止
+  staticMinSec: 30, // 静的測位の最低収集時間
   mapType: 'std',
   trackEnabled: true,
 };
@@ -58,11 +60,24 @@ async function main() {
 
   // ---- 記録 ----
   const recorder = new Recorder(storage, {
-    onStaticUpdate: ({ count, elapsedSec, stats }) => {
+    onStaticUpdate: ({ count, elapsedSec, stats, convergence }) => {
       $('st-count').textContent = String(count);
       $('st-elapsed').textContent = `${Math.floor(elapsedSec)} s`;
       $('st-drms').textContent = stats ? `${stats.drms.toFixed(2)} m` : '—';
       $('st-cep').textContent = stats && stats.cep50 != null ? `${stats.cep50.toFixed(2)} m` : '—';
+      // 収束判定の状況（docs/static-autostop-202607.md 5.）
+      const convEl = $('st-conv');
+      if (!settings.staticAutoStop) {
+        convEl.textContent = '—（自動停止OFF）';
+      } else if (elapsedSec < settings.staticMinSec) {
+        convEl.textContent = `最低時間まで残り ${Math.max(0, Math.ceil(settings.staticMinSec - elapsedSec))} 秒`;
+      } else if (!convergence) {
+        convEl.textContent = '待機中（品質不足）';
+      } else if (convergence.centerMoveM == null) {
+        convEl.textContent = '判定中（安定10秒待ち）';
+      } else {
+        convEl.textContent = `安定 ${convergence.centerMoveM.toFixed(1)} m / DRMS±${convergence.drmsRangeM.toFixed(1)} m`;
+      }
       if (stats) scatterView.update(stats);
     },
     onStaticStop: async (session) => {
@@ -337,11 +352,18 @@ async function main() {
       alert('有効な測位データがありません。接続（またはモック）を開始してください。');
       return;
     }
+    // 測定開始前に地点名を確認する（既定名: yyyy-mm-dd-xx の同日連番）
+    const sessions = await storage.getSessions();
+    const defaultLabel = $('rec-label').value.trim() || nextPointLabel(sessions.map((s) => s.label));
+    const input = prompt('地点名を入力してください', defaultLabel);
+    if (input == null) return; // キャンセル → 測定を開始しない
     recorder.startStatic({
-      label: $('rec-label').value.trim(),
+      label: input.trim() || defaultLabel,
       memo: $('rec-memo').value.trim(),
       maxSec: settings.staticMaxSec,
       maxEpochs: settings.staticMaxEpochs,
+      autoStop: settings.staticAutoStop,
+      minSec: settings.staticMinSec,
     });
     $('btn-static').textContent = '⏹ 静的測位 停止';
     $('btn-static').classList.add('danger');

@@ -1,7 +1,8 @@
 // スカイプロット：仰角（中心90°→外周0°）と方位角（北を上、時計回り）で衛星を配置。
 // 使用中＝塗りつぶし、可視のみ＝中抜き。円の大きさ＝SNR。色＝コンステレーション。
+// GSV が欠けた秒はブランクにせず前フレームを保持し、HOLD_MS 超過でクリアする（キャリーフォワード）。
 import { CONSTELLATION_COLORS } from './nmea-parser.js';
-import { CanvasView } from './canvas-view.js';
+import { CanvasView, HOLD_MS, holdDecision } from './canvas-view.js';
 
 export class SkyPlotView extends CanvasView {
   _computeSize() {
@@ -9,9 +10,8 @@ export class SkyPlotView extends CanvasView {
     return { w: s, h: s };
   }
 
-  update(epoch) {
-    this._last = epoch;
-    this._syncSize();
+  // クリア＋グリッド（仰角リング 0/30/60° と方位の十字・NSEW ラベル）を描き、幾何を返す
+  _drawGrid() {
     const ctx = this.ctx;
     const S = this.w;
     const cx = S / 2;
@@ -19,7 +19,6 @@ export class SkyPlotView extends CanvasView {
     const R = S / 2 - 18;
     ctx.clearRect(0, 0, S, S);
 
-    // グリッド（仰角リング 0/30/60° と方位の十字）
     ctx.strokeStyle = 'rgba(255,255,255,0.12)';
     ctx.lineWidth = 1;
     for (const el of [0, 30, 60]) {
@@ -43,6 +42,31 @@ export class SkyPlotView extends CanvasView {
     ctx.fillText('S', cx, cy + R + 9);
     ctx.fillText('E', cx + R + 9, cy);
     ctx.fillText('W', cx - R - 9, cy);
+
+    return { cx, cy, R };
+  }
+
+  update(epoch) {
+    const now = epoch?.recvAt ?? Date.now();
+    const hasSats = (epoch?.satellites || []).some((s) => s.elev != null && s.azim != null);
+    const age = this._lastSatAt == null ? Infinity : now - this._lastSatAt;
+
+    const decision = holdDecision(hasSats, age, HOLD_MS);
+    if (decision === 'hold') return; // 前フレーム保持（クリアも描画もしない）
+    if (decision === 'clear') {
+      // 失効：ゴースト衛星を残さないようクリア（グリッドのみ再描画）
+      this._last = null;
+      this._lastSatAt = null;
+      this._syncSize();
+      this._drawGrid();
+      return;
+    }
+
+    this._last = epoch; // 最後の有効エポック（リサイズ再描画用）
+    this._lastSatAt = now;
+    this._syncSize();
+    const ctx = this.ctx;
+    const { cx, cy, R } = this._drawGrid();
 
     for (const sat of epoch.satellites || []) {
       if (sat.elev == null || sat.azim == null) continue;

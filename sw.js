@@ -1,7 +1,7 @@
 // Service Worker：アプリシェルのプリキャッシュ＋地理院地図タイルのキャッシュ。
 // タイルは cache-first（オフラインでもキャッシュ済範囲の地図が出る）。
 // タイルキャッシュ名は js/tile-cache.js の事前ダウンロードと共有する。
-const SHELL_CACHE = 'gnss-shell-v4';
+const SHELL_CACHE = 'gnss-shell-v5';
 const TILE_CACHE = 'gsi-tiles';
 
 const APP_SHELL = [

@@ -1,8 +1,18 @@
 // 特定地点の GNSS 値の記録（仕様 3-6）。
 //   (A) スナップショット記録: 現在エポックの1点を保存
 //   (B) 静的測位記録: 一点に留まり N秒 or Mエポック を連続収集 → 集計して保存
+//       autoStop 有効時は「最低 minSec 秒 → 中心・DRMS が holdSec 秒横ばい」で自動停止
+//       （docs/static-autostop-202607.md）。maxSec/maxEpochs はタイムアウト（保険）として併用。
 // 保存先は IndexedDB（storage.js）。集計は accuracy.js の computeStaticStats。
-import { computeStaticStats } from './accuracy.js';
+import { computeStaticStats, evaluateConvergence } from './accuracy.js';
+
+// 収束自動停止の判定パラメータ（設定画面には出さないモジュール定数）
+const CONVERGENCE = { holdSec: 10, centerTolM: 0.3, drmsTolAbsM: 0.3, drmsTolPct: 0.05 };
+
+// 品質ゲート：そのエポックを収束判定に使えるか（停止用途のみ。記録の蓄積条件は変えない）
+function qualityOk(epoch) {
+  return epoch.fixMode === 3 && epoch.hdop != null && epoch.hdop <= 3 && epoch.satsUsed != null && epoch.satsUsed >= 5;
+}
 
 // エポックから保存用のサンプル（必要最小限のフィールド）を取り出す
 function toSample(epoch) {
@@ -44,11 +54,34 @@ export class Recorder {
     st.samples.push(toSample(epoch));
     const elapsedSec = (Date.now() - st.startedAt) / 1000;
     const stats = computeStaticStats(st.samples); // 暫定ばらつき（点数は高々数百なので毎回計算で十分軽い）
-    this.onStaticUpdate({ count: st.samples.length, elapsedSec, stats });
 
-    // 自動停止条件（0 は無効）
-    if ((st.maxSec > 0 && elapsedSec >= st.maxSec) || (st.maxEpochs > 0 && st.samples.length >= st.maxEpochs)) {
-      this.stopStatic();
+    // 収束状況の算出（品質ゲート通過エポックのみ履歴に積む。不良で連続性リセット）
+    let convergence = null;
+    if (st.autoStop) {
+      if (qualityOk(epoch) && stats) {
+        st.convHistory.push({ t: elapsedSec, lat: stats.center.lat, lon: stats.center.lon, drms: stats.drms });
+        // 古い履歴の間引き（基準点確保のため holdSec より 5 秒余裕を残す）
+        const keepFrom = elapsedSec - CONVERGENCE.holdSec - 5;
+        if (st.convHistory[0].t < keepFrom) st.convHistory = st.convHistory.filter((h) => h.t >= keepFrom);
+        convergence = evaluateConvergence(st.convHistory, elapsedSec, { minSec: st.minSec, ...CONVERGENCE });
+      } else {
+        st.convHistory = []; // 品質不良 →「安定して10秒」の連続カウントをやり直す
+      }
+    }
+
+    this.onStaticUpdate({ count: st.samples.length, elapsedSec, stats, convergence });
+
+    // 収束停止（最低時間経過＋直近 holdSec 窓で中心・DRMS 横ばい）
+    if (convergence && convergence.stable) {
+      this.stopStatic('converged');
+      return;
+    }
+
+    // タイムアウト停止（既存動作。0 は無効）
+    if (st.maxSec > 0 && elapsedSec >= st.maxSec) {
+      this.stopStatic('timeout');
+    } else if (st.maxEpochs > 0 && st.samples.length >= st.maxEpochs) {
+      this.stopStatic('maxEpochs');
     }
   }
 
@@ -90,7 +123,7 @@ export class Recorder {
   }
 
   // ---- (B) 静的測位記録 ----
-  startStatic({ label = '', memo = '', maxSec = 60, maxEpochs = 120 } = {}) {
+  startStatic({ label = '', memo = '', maxSec = 60, maxEpochs = 120, autoStop = true, minSec = 30 } = {}) {
     if (this.static) return;
     this.static = {
       label: label || `静的測位 ${new Date().toLocaleString('ja-JP')}`,
@@ -100,11 +133,14 @@ export class Recorder {
       maxSec,
       maxEpochs,
       paused: false,
+      autoStop, // 収束自動停止の有効/無効
+      minSec, // 最低収集時間 [秒]（これ未満では絶対に停止しない）
+      convHistory: [], // [{ t, lat, lon, drms }] 品質ゲート通過エポックのみ
     };
-    this.onStaticUpdate({ count: 0, elapsedSec: 0, stats: null });
+    this.onStaticUpdate({ count: 0, elapsedSec: 0, stats: null, convergence: null });
   }
 
-  async stopStatic() {
+  async stopStatic(reason = 'manual') {
     const st = this.static;
     if (!st) return null;
     this.static = null;
@@ -127,8 +163,9 @@ export class Recorder {
             drms: stats.drms,
             cep50: stats.cep50,
             cep95: stats.cep95,
+            stopReason: reason, // 'converged' | 'timeout' | 'maxEpochs' | 'manual'
           }
-        : { count: 0 },
+        : { count: 0, stopReason: reason },
     };
     await this.storage.putSession(session);
     await this.storage.putPoint({

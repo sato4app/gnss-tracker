@@ -30,10 +30,41 @@ export function fixBadge(epoch) {
   return FIX_BADGE[epoch.fixQuality] || { t: `fix${epoch.fixQuality}`, cls: 'ok' };
 }
 
+// 静的測位の停止理由 → 表示ラベル
+export const STOP_REASON = {
+  converged: '収束（中心・DRMS横ばい）',
+  timeout: '上限時間到達（未収束）',
+  maxEpochs: '上限エポック到達',
+  manual: '手動停止',
+};
+
+// 停止理由の表示行（stopReason 無しの旧データは空 = manual 相当にフォールバック）
+export function stopReasonText(reason) {
+  if (!reason) return '';
+  if (reason === 'manual') return STOP_REASON.manual;
+  return `自動停止: ${STOP_REASON[reason] || reason}`;
+}
+
+// 静的測位の既定地点名 "yyyy-mm-dd-xx"（xx=01からの同日連番）を生成する純粋関数。
+// labels: 既存セッションのラベル一覧。同日の "yyyy-mm-dd-数値" 形式のみ連番として数える。
+export function nextPointLabel(labels, now = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  const prefix = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-`;
+  let max = 0;
+  for (const label of labels || []) {
+    if (typeof label !== 'string' || !label.startsWith(prefix)) continue;
+    const rest = label.slice(prefix.length);
+    if (/^\d+$/.test(rest)) max = Math.max(max, +rest);
+  }
+  return `${prefix}${p(max + 1)}`;
+}
+
 // 静的測位セッションの集計テキスト（記録結果パネル表示用）
 export function formatStats(session, st) {
   const fixLine = Object.entries(st.fixCounts).map(([q, n]) => `fix${q}:${n}`).join(' ');
+  const reasonLine = stopReasonText(session.summary?.stopReason);
   return [
+    ...(reasonLine ? [reasonLine] : []),
     `【${session.label}】 収集 ${st.count} エポック`,
     `中心: ${st.center.lat.toFixed(7)}, ${st.center.lon.toFixed(7)}（中央値: ${st.median.lat.toFixed(7)}, ${st.median.lon.toFixed(7)}）`,
     `標準偏差: 東西 ${st.stdEastM.toFixed(2)} m / 南北 ${st.stdNorthM.toFixed(2)} m`,

@@ -38,10 +38,12 @@ try {
 
 // ---- 純粋ロジックの簡易テスト ----
 const { parseSentence, validateChecksum } = await import(pathToFileURL(resolve(jsDir, 'nmea-parser.js')).href);
-const { computeStaticStats, estimateHorizontalAccuracy, metersPerDegree } = await import(
+const { computeStaticStats, estimateHorizontalAccuracy, metersPerDegree, evaluateConvergence } = await import(
   pathToFileURL(resolve(jsDir, 'accuracy.js')).href
 );
 const { LineBuffer } = await import(pathToFileURL(resolve(jsDir, 'line-buffer.js')).href);
+const { holdDecision } = await import(pathToFileURL(resolve(jsDir, 'canvas-view.js')).href);
+const { nextPointLabel } = await import(pathToFileURL(resolve(jsDir, 'format.js')).href);
 
 function assert(cond, msg) {
   if (cond) {
@@ -98,6 +100,47 @@ assert(st.drms > 0 && st.cep50 > 0 && st.cep95 >= st.cep50, '集計: DRMS/CEP');
 assert(st.offsets.length === 100, '集計: 散布図オフセット');
 const { lonM } = metersPerDegree(35);
 assert(Math.abs(lonM - 111320 * Math.cos((35 * Math.PI) / 180)) < 1e-6, 'm/度 換算');
+
+// 衛星表示のキャリーフォワード判定（docs/sat-view-hold-202607.md 9.）
+assert(holdDecision(true, 0, 8000) === 'draw', 'holdDecision: 衛星ありは常に描画');
+assert(holdDecision(false, 3000, 8000) === 'hold', 'holdDecision: 失効時間内は保持');
+assert(holdDecision(false, 8001, 8000) === 'clear', 'holdDecision: 失効超過はクリア');
+assert(holdDecision(false, Infinity, 8000) === 'clear', 'holdDecision: 未受信（初期状態）はクリア');
+
+// 収束判定（docs/static-autostop-202607.md 9.）
+const CONV_OPTS = { minSec: 30, holdSec: 10, centerTolM: 0.3, drmsTolAbsM: 0.3, drmsTolPct: 0.05 };
+const mkHistory = (n, fn) => Array.from({ length: n }, (_, i) => ({ t: i, ...fn(i) }));
+
+// 横ばい列（中心固定・DRMS一定）→ stable
+const flat = mkHistory(41, () => ({ lat: 34.8536, lon: 135.472, drms: 1.0 }));
+assert(evaluateConvergence(flat, 40, CONV_OPTS).stable === true, '収束: 横ばい列で stable');
+
+// ドリフト列（中心が毎秒 0.2 m 北へ移動 = 10秒で 2 m）→ centerMoveM 超過で not stable
+const drift = mkHistory(41, (i) => ({ lat: 34.8536 + (i * 0.2) / 111320, lon: 135.472, drms: 1.0 }));
+const convDrift = evaluateConvergence(drift, 40, CONV_OPTS);
+assert(convDrift.stable === false && convDrift.centerMoveM > 0.3, '収束: ドリフト列で not stable');
+
+// DRMS 変動列（窓内で 1 m 変動）→ drmsRangeM 超過で not stable
+const drmsVar = mkHistory(41, (i) => ({ lat: 34.8536, lon: 135.472, drms: 1.0 + (i % 2) }));
+const convDrms = evaluateConvergence(drmsVar, 40, CONV_OPTS);
+assert(convDrms.stable === false && convDrms.drmsRangeM > 0.3, '収束: DRMS変動列で not stable');
+
+// 時間不足（elapsedSec < minSec）→ not stable
+assert(evaluateConvergence(flat.slice(0, 21), 20, CONV_OPTS).stable === false, '収束: 最低時間未満は not stable');
+
+// 窓未充足（品質リセット後などで履歴が holdSec 未満）→ not stable
+const short = mkHistory(5, (i) => ({ lat: 34.8536, lon: 135.472, drms: 1.0 })).map((h) => ({ ...h, t: 36 + h.t }));
+const convShort = evaluateConvergence(short, 40, CONV_OPTS);
+assert(convShort.stable === false && convShort.centerMoveM == null, '収束: 窓未充足は not stable');
+
+// 既定地点名 yyyy-mm-dd-xx の連番（同日のみ数える）
+const day = new Date(2026, 6, 8); // 2026-07-08
+assert(nextPointLabel([], day) === '2026-07-08-01', '地点名: 初回は -01');
+assert(nextPointLabel(['2026-07-08-01', '2026-07-08-02'], day) === '2026-07-08-03', '地点名: 連番の次');
+assert(
+  nextPointLabel(['2026-07-07-05', '任意ラベル', '2026-07-08-09'], day) === '2026-07-08-10',
+  '地点名: 他日・任意ラベルは無視'
+);
 
 console.log(failed ? `\n${failed} 件失敗` : '\n全チェック OK');
 process.exit(failed ? 1 : 0);

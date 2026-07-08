@@ -28,6 +28,37 @@ export function estimateHorizontalAccuracy(epoch, uere = 5) {
   return null;
 }
 
+// 収束用の中心/DRMS 履歴から、直近 holdSec 窓での安定性を評価する純粋関数。
+// history: [{ t, lat, lon, drms }]（t=経過秒, 中心lat/lon, その時点のDRMS）を時刻昇順で受ける。
+// 累積統計は時間とともに必ず平坦化するため、累積値の単純な差分ではなく
+// 「直近 holdSec 秒の窓」での中心移動量と DRMS 変動幅で判定する。
+// 返り値: { stable: boolean, centerMoveM: number|null, drmsRangeM: number|null }
+export function evaluateConvergence(history, elapsedSec, opts) {
+  const { minSec, holdSec, centerTolM, drmsTolAbsM, drmsTolPct } = opts;
+  if (elapsedSec < minSec || history.length < 2) return { stable: false, centerMoveM: null, drmsRangeM: null };
+
+  const cutoff = elapsedSec - holdSec;
+  // holdSec 秒前以前の基準点（連続した良好データが holdSec 以上あるか）
+  let ref = null;
+  for (const h of history) {
+    if (h.t <= cutoff) ref = h;
+    else break;
+  }
+  if (!ref) return { stable: false, centerMoveM: null, drmsRangeM: null }; // 窓を満たしていない
+
+  const cur = history[history.length - 1];
+  const { latM, lonM } = metersPerDegree(cur.lat);
+  const centerMoveM = Math.hypot((cur.lon - ref.lon) * lonM, (cur.lat - ref.lat) * latM);
+
+  const win = history.filter((h) => h.t >= ref.t);
+  const drmsVals = win.map((h) => h.drms).filter((v) => v != null);
+  const drmsRangeM = drmsVals.length ? Math.max(...drmsVals) - Math.min(...drmsVals) : 0;
+
+  const drmsTol = Math.max(drmsTolAbsM, drmsTolPct * (cur.drms || 0));
+  const stable = centerMoveM <= centerTolM && drmsRangeM <= drmsTol;
+  return { stable, centerMoveM, drmsRangeM };
+}
+
 function mean(arr) {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
 }

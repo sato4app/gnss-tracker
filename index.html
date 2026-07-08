@@ -100,6 +100,7 @@
           <div><dt>経過時間</dt><dd id="st-elapsed" class="mono">0 s</dd></div>
           <div><dt>DRMS(暫定)</dt><dd id="st-drms" class="mono">—</dd></div>
           <div><dt>CEP50(暫定)</dt><dd id="st-cep" class="mono">—</dd></div>
+          <div><dt>収束判定</dt><dd id="st-conv" class="mono">—</dd></div>
         </dl>
       </div>
       <div class="sub-head">散布図（中心からの東西×南北オフセット）</div>
@@ -115,9 +116,16 @@
       <label class="set-row">UERE（HDOP×UERE 概算用）[m]
         <input id="set-uere" type="number" min="1" max="30" step="0.5">
       </label>
-      <label class="set-row">静的測位 収集時間 [秒]（0=無制限）
+      <label class="set-row">収束で自動停止（中心・DRMSが10秒横ばい）
+        <input id="set-autostop" type="checkbox">
+      </label>
+      <label class="set-row">静的測位 最低収集時間 [秒]
+        <input id="set-minsec" type="number" min="0" step="5">
+      </label>
+      <label class="set-row">静的測位 上限時間 [秒]（0=無制限・タイムアウト）
         <input id="set-maxsec" type="number" min="0" step="10">
       </label>
+      <div class="note-dim">未収束の環境では上限時間で停止します（0 だと収束するまで停止しません）。収束に余裕を見る場合は 300 秒など大きめに設定できます。</div>
       <label class="set-row">静的測位 収集エポック数（0=無制限）
         <input id="set-maxepochs" type="number" min="0" step="10">
       </label>
