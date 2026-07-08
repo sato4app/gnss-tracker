@@ -1,9 +1,11 @@
 // エントリ：各モジュールの結線。
 // データフロー: BLE/Mock → LineBuffer → nmea-parser → EpochAssembler
 //             → (地図 / ライブ表示 / 解析 / 記録) ※再描画は rAF でスロットリング
+// 行・エポックは StreamStats（受信品質統計）にも分岐する。$PPICO は統計のみ。
 import { LineBuffer } from './line-buffer.js';
 import { parseSentence, CONSTELLATION_COLORS, CONSTELLATION_LABELS } from './nmea-parser.js';
 import { EpochAssembler } from './epoch-assembler.js';
+import { StreamStats } from './stream-stats.js';
 import { NmeaBle } from './ble-client.js';
 import { MockFeeder } from './mock-feeder.js';
 import { estimateHorizontalAccuracy } from './accuracy.js';
@@ -58,8 +60,12 @@ async function main() {
   });
   const tileCache = new TileCache();
 
+  // ---- 受信品質統計（M10S→Pico→BLE→アプリの取りこぼし確認） ----
+  const streamStats = new StreamStats();
+
   // ---- 記録 ----
   const recorder = new Recorder(storage, {
+    getRxStats: () => streamStats.snapshot(), // 測定1回分の受信品質を summary に残す
     onStaticUpdate: ({ count, elapsedSec, stats, convergence }) => {
       $('st-count').textContent = String(count);
       $('st-elapsed').textContent = `${Math.floor(elapsedSec)} s`;
@@ -92,6 +98,7 @@ async function main() {
 
   const assembler = new EpochAssembler({
     onEpoch: (epoch) => {
+      streamStats.addEpoch(epoch); // エポック数・時刻ギャップ・GSV欠落を集計
       latestEpoch = epoch;
       recorder.addEpoch(epoch);
       if (!renderQueued) {
@@ -104,13 +111,15 @@ async function main() {
     },
   });
 
-  const lineBuffer = new LineBuffer();
+  const lineBuffer = new LineBuffer({ onDiscard: (chars) => streamStats.noteDiscard(chars) });
   let lastRxAt = null;
 
   function handleFrame(frame) {
     lastRxAt = Date.now();
     for (const line of lineBuffer.push(frame)) {
-      assembler.add(parseSentence(line)); // チェックサム不正は valid:false → 黙って捨てる
+      const parsed = parseSentence(line);
+      if (streamStats.addLine(parsed)) continue; // $PPICO は統計のみ（エポックへ回さない）
+      assembler.add(parsed); // チェックサム不正は valid:false → 計数して捨てる
     }
   }
 
@@ -139,8 +148,33 @@ async function main() {
     $('conn-dot').dataset.state = state;
   }
 
+  // ---- 受信品質パネル（接続タブ）の描画 ----
+  function renderRxStats() {
+    const s = streamStats;
+    $('rx-lines').textContent = `${s.lines} / ${s.csNg}`;
+    $('rx-unknown').textContent = `${s.unknown} / ${s.discardedChars}`;
+    $('rx-epochs').textContent = `${s.epochs} / ${s.epochGaps}`;
+    $('rx-gsv').textContent = String(s.gsvMissing);
+    $('rx-ble').textContent = s.bleLossEst == null ? '—' : `${s.bleLossEst} 行`;
+    if (s.pico) {
+      $('rx-ppico').textContent = `#${s.pico.seq}（欠落 ${s.picoSeqGaps}）`;
+      $('rx-pico-uart').textContent = `${s.pico.rx} / ${s.pico.ng}`;
+      $('rx-pico-drop').textContent = `${s.pico.drop} / ${s.pico.txng}`;
+    } else {
+      $('rx-ppico').textContent = '未受信';
+      $('rx-pico-uart').textContent = '—';
+      $('rx-pico-drop').textContent = '—';
+    }
+  }
+
+  $('btn-rxstats-reset').addEventListener('click', () => {
+    streamStats.reset();
+    renderRxStats();
+  });
+
   // 接続中＋データが流れていれば「受信中」へ昇格、最終受信経過も表示
   setInterval(() => {
+    renderRxStats();
     if (lastRxAt == null) {
       $('last-recv').textContent = '—';
       return;
@@ -166,6 +200,8 @@ async function main() {
       return;
     }
     stopMock();
+    streamStats.reset(); // 新しい接続 = 新しい測定区間として統計を取り直す
+    renderRxStats();
     ble = new NmeaBle({
       onFrame: handleFrame,
       onStatus: (s) => {
@@ -187,6 +223,8 @@ async function main() {
       ble.disconnect();
       ble = null;
     }
+    streamStats.reset();
+    renderRxStats();
     mock = new MockFeeder(handleFrame);
     mock.start();
     setConnStatus('demo');

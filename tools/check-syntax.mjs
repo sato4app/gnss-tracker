@@ -44,6 +44,8 @@ const { computeStaticStats, estimateHorizontalAccuracy, metersPerDegree, evaluat
 const { LineBuffer } = await import(pathToFileURL(resolve(jsDir, 'line-buffer.js')).href);
 const { holdDecision } = await import(pathToFileURL(resolve(jsDir, 'canvas-view.js')).href);
 const { nextPointLabel } = await import(pathToFileURL(resolve(jsDir, 'format.js')).href);
+const { EpochAssembler } = await import(pathToFileURL(resolve(jsDir, 'epoch-assembler.js')).href);
+const { StreamStats, diffRxStats } = await import(pathToFileURL(resolve(jsDir, 'stream-stats.js')).href);
 
 function assert(cond, msg) {
   if (cond) {
@@ -86,6 +88,67 @@ assert(Math.abs(accDop.value - 6) < 1e-9 && accDop.source === 'HDOP×UERE', 'HDO
 const lb = new LineBuffer();
 const out = [...lb.push('$GNGGA,1234'), ...lb.push('56.00,A*7F\n$GNR'), ...lb.push('MC,123456.00,A*68\n')];
 assert(out.length === 2 && out[0].startsWith('$GNGGA') && out[1].startsWith('$GNRMC'), 'LineBuffer 断片結合');
+
+// LineBuffer：溢れ破棄の通知（受信品質統計用。docs/rx-integrity-202607.md）
+let discarded = 0;
+const lbOv = new LineBuffer({ onDiscard: (n) => (discarded += n) });
+lbOv.push('x'.repeat(5000)); // 行にならないゴミ
+assert(discarded === 5000, 'LineBuffer 溢れ破棄を onDiscard で通知');
+
+// ---- 受信品質統計（docs/rx-integrity-202607.md） ----
+
+// $PPICO（Pico側カウンタ）のパース
+const ppico = parseSentence(cs('PPICO,3,1200,2,1,1190,4'));
+assert(
+  ppico.valid && ppico.type === 'PPICO' && ppico.seq === 3 && ppico.rx === 1200 && ppico.ng === 2,
+  '$PPICOパース: seq/rx/ng'
+);
+assert(ppico.drop === 1 && ppico.txok === 1190 && ppico.txng === 4, '$PPICOパース: drop/txok/txng');
+
+// GSV の signalId 抽出（NMEA 4.10+ 末尾フィールド）
+const gsvSig = parseSentence(cs('GPGSV,3,1,09,01,55,120,40,08,40,200,35,11,30,075,30,17,65,310,42,1'));
+assert(gsvSig.valid && gsvSig.signalId === '1' && gsvSig.sats.length === 4, 'GSV signalId 抽出');
+
+// EpochAssembler：GSV 部分欠落の検出（total=3 のうち msg2 が届かない）
+const epochsOut = [];
+const asm = new EpochAssembler({ onEpoch: (e) => epochsOut.push(e) });
+asm.add(parseSentence(cs('GNGGA,100000.00,3451.2200,N,13528.3225,E,1,12,0.8,93.5,M,38.0,M,,')));
+asm.add(parseSentence(cs('GPGSV,3,1,09,01,55,120,40,08,40,200,35,11,30,075,30,17,65,310,42,1')));
+asm.add(parseSentence(cs('GPGSV,3,3,09,19,22,045,25,1')));
+asm.flush();
+assert(epochsOut.length === 1 && epochsOut[0].gsvMissing === 1, 'エポック: GSV部分欠落を検出');
+
+// StreamStats：行の分類（解釈済み / チェックサムNG / 未対応）
+const ss = new StreamStats();
+ss.addLine(parseSentence(ggaLine)); // parsedOk
+ss.addLine(parseSentence(ggaLine.slice(0, -1) + '0')); // csNg
+ss.addLine(parseSentence(cs('GNZDA,123456.00,08,07,2026,,'))); // 未対応（計数のみ）
+assert(ss.lines === 3 && ss.csNg === 1 && ss.parsedOk === 1 && ss.unknown === 1, 'StreamStats: 行分類');
+
+// StreamStats：$PPICO 突合による BLE 欠落推定
+const pp = (seq, txok) => parseSentence(cs(`PPICO,${seq},1000,2,0,${txok},1`));
+assert(ss.addLine(pp(1, 100)) === true, 'StreamStats: $PPICO はエポックへ回さない');
+for (let i = 0; i < 5; i++) ss.addLine(parseSentence(ggaLine)); // Pico 10行送信中 5行のみ届いた想定
+ss.addLine(pp(2, 110));
+assert(ss.bleLossEst === 4, 'StreamStats: BLE欠落の推定（Δtxok−Δ受信行数）');
+ss.addLine(pp(4, 112)); // seq 3 が欠落
+assert(ss.picoSeqGaps === 1, 'StreamStats: $PPICO 自体の欠落検出');
+ss.addLine(pp(1, 5)); // カウンタ後退 = Pico 再起動
+assert(ss.bleLossEst === 0, 'StreamStats: Pico再起動で基準を取り直す');
+
+// StreamStats：エポックの時刻ギャップと GSV 欠落の集計
+const ss2 = new StreamStats();
+ss2.addEpoch({ time: { h: 10, m: 0, s: 0 }, gsvMissing: 0 });
+ss2.addEpoch({ time: { h: 10, m: 0, s: 3 }, gsvMissing: 2 }); // 2秒分欠落
+assert(ss2.epochs === 2 && ss2.epochGaps === 2 && ss2.gsvMissing === 2, 'StreamStats: エポックギャップ/GSV欠落');
+
+// diffRxStats：測定区間（静的測位1回分）の差分
+const dr = diffRxStats(
+  { lines: 100, csNg: 2, parsedOk: 90, unknown: 1, discardedChars: 0, epochs: 50, epochGaps: 1, gsvMissing: 3, picoSeqGaps: 0, bleLossEst: 5, pico: { seq: 10, rx: 900, ng: 4, drop: 1, txok: 950, txng: 2 } },
+  { lines: 40, csNg: 1, parsedOk: 35, unknown: 0, discardedChars: 0, epochs: 20, epochGaps: 0, gsvMissing: 1, picoSeqGaps: 0, bleLossEst: 2, pico: { seq: 4, rx: 400, ng: 1, drop: 0, txok: 420, txng: 0 } }
+);
+assert(dr.lines === 60 && dr.csNg === 1 && dr.bleLossEst === 3, 'diffRxStats: アプリ側の区間差分');
+assert(dr.pico && dr.pico.rx === 500 && dr.pico.ng === 3 && dr.pico.drop === 1, 'diffRxStats: Pico側の区間差分');
 
 // 静的測位の集計
 const base = { lat: 34.8536, lon: 135.472, altMSL: 93, fixQuality: 1, hdop: 1, pdop: 1.5, vdop: 1.2, satsUsed: 10 };

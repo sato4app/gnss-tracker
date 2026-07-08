@@ -4,6 +4,9 @@
 #   - Picoは生のNMEA文を一切パースせず、そのまま全種類を流すだけ。
 #     （$GNRMC, $GNGGA, $GNGSV ... 何が欲しくなってもファームは変更不要）
 #   - パース・判定・表示はすべて受信側(スマホブラウザ)で行う。
+#   - 例外として受信品質の確認用に、UART受信行数などのカウンタを 5 秒ごとに
+#     独自文 $PPICO として配信する（docs/rx-integrity-202607.md）。
+#     チェックサム検証は行うが文の中身は解釈しない（ダムパイプは維持）。
 #   - 配信は Bluetooth(BLE, Nordic UART Service) のみ。WiFi/WebSocket は廃止した。
 #     受信側は Web Bluetooth 対応端末（Android の Chrome/Edge 等）が必須。
 #     （iPhone/iPad は Web Bluetooth 非対応のため対象外）
@@ -117,13 +120,18 @@ class BlePeripheral:
         except Exception as e:
             print("  BLE広告エラー:", e)
 
+    def connected(self):
+        return bool(self._conns)
+
     def send_line(self, line):
         # line: bytes（改行なし）。受信側で行に再分割できるよう \n を付け、
         # ATT_MTU に収まるサイズに分割して notify する。
+        # 戻り値: None=接続なし / True=全接続へ送信完了 / False=いずれかの接続で破棄
         if not self._conns:
-            return
+            return None
         data = line + b"\n"
         n = len(data)
+        ok_all = True
         for conn, chunk_len in list(self._conns.items()):
             mv = memoryview(data)
             i = 0
@@ -142,8 +150,10 @@ class BlePeripheral:
                 if not sent:
                     # この行は諦めて次のクライアントへ（接続は維持。
                     # 途切れた行は受信側のチェックサム検証で弾かれる）
+                    ok_all = False
                     break
                 i += chunk_len
+        return ok_all
 
 
 # ── GNSS UART のボーレート自動同期 ────────────────────────────────────────
@@ -261,6 +271,25 @@ def main():
 
     buf = b""
     last_gc = time.ticks_ms()
+    last_stat = time.ticks_ms()
+
+    # 受信品質カウンタ（起動からの累計。5秒ごとに $PPICO 文で配信し、
+    # アプリ側が区間差分から各段の欠落を判定する。docs/rx-integrity-202607.md）
+    st_rx = 0      # UARTから受信した行数
+    st_ng = 0      # うちチェックサムNG（M10S→Pico 間の欠落・化けの兆候）
+    st_drop = 0    # 行にならないままバッファを破棄した回数
+    st_txok = 0    # BLEへ送信完了した行数（$PPICO 含む）
+    st_txng = 0    # リトライしても送れず破棄した行数
+    ppico_seq = 0  # $PPICO の通し番号（アプリ側で統計文自体の欠落を検出）
+
+    def send_counted(line):
+        # send_line の結果を txok/txng に反映する（未接続 None は数えない）
+        nonlocal st_txok, st_txng
+        r = ble.send_line(line)
+        if r is True:
+            st_txok += 1
+        elif r is False:
+            st_txng += 1
 
     while True:
         wdt.feed()
@@ -273,11 +302,27 @@ def main():
                 line, buf = buf.split(b"\n", 1)
                 line = line.strip()                   # \r や空白を除去
                 if line:
-                    ble.send_line(line)
+                    st_rx += 1
+                    if not _nmea_checksum_ok(line):
+                        # NG行もそのまま転送する（ダムパイプ維持。アプリ側で破棄・計数）
+                        st_ng += 1
+                    send_counted(line)
             if len(buf) > 2048:                       # 暴走防止
+                st_drop += 1
                 buf = b""
         except Exception as e:
             print("UART/送信エラー:", e)
+
+        # 5秒ごと: 受信品質カウンタを $PPICO 文で配信（接続中のみ）。
+        # カウンタは snapshot→送信の順なので、txok は自身の $PPICO を含まない。
+        if ble.connected() and time.ticks_diff(time.ticks_ms(), last_stat) >= 5000:
+            last_stat = time.ticks_ms()
+            ppico_seq += 1
+            body = "PPICO,%d,%d,%d,%d,%d,%d" % (ppico_seq, st_rx, st_ng, st_drop, st_txok, st_txng)
+            cs = 0
+            for ch in body:
+                cs ^= ord(ch)
+            send_counted(("$%s*%02X" % (body, cs)).encode())
 
         # 定期: メモリ回収
         if time.ticks_diff(time.ticks_ms(), last_gc) > 2000:

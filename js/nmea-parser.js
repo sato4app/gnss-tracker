@@ -1,5 +1,9 @@
 // NMEA 0183 パーサ（GGA / RMC / GSA / GSV / VTG / GST）＋チェックサム検証
 // マルチGNSS（GP/GL/GA/GB/BD/GQ/GN）対応。
+// 独自文 $PPICO（Pico の受信品質カウンタ。docs/rx-integrity-202607.md）も解釈する。
+
+// 内容まで解釈する標準センテンス種別（これ以外の valid 文は「未対応」として計数のみ）
+export const PARSED_TYPES = new Set(['GGA', 'RMC', 'GSA', 'GSV', 'VTG', 'GST']);
 
 // トーカーID → コンステレーション識別子（表示名は CONSTELLATION_LABELS 側に集約）
 const TALKER_CONSTELLATION = {
@@ -85,6 +89,15 @@ export function parseSentence(raw) {
   const body = star >= 0 ? line.slice(1, star) : line.slice(1);
   const fields = body.split(',');
   const tag = fields[0] || '';
+
+  // プロプライエタリ文（$P...）はタグ全体を type とする（例: PPICO）
+  if (tag[0] === 'P') {
+    result.talker = null;
+    result.type = tag;
+    if (result.valid && tag === 'PPICO') return { ...result, ...parsePPICO(fields) };
+    return result;
+  }
+
   result.talker = tag.slice(0, 2);
   result.type = tag.slice(2);
 
@@ -159,7 +172,10 @@ function parseGSV(f, talker) {
       constellation: constellationFromTalker(talker),
     });
   }
-  return { totalMsgs: +f[1] || 1, msgNum: +f[2] || 1, inView: num(f[3]), sats };
+  // NMEA 4.10+ は末尾に signalId が付く（フィールド数 4+4n+1 のとき）。
+  // GSV グループの完全性チェック（epoch-assembler.js）のキーに使う。
+  const signalId = (f.length - 4) % 4 === 1 ? f[f.length - 1] || null : null;
+  return { totalMsgs: +f[1] || 1, msgNum: +f[2] || 1, inView: num(f[3]), sats, signalId };
 }
 
 function parseVTG(f) {
@@ -168,6 +184,18 @@ function parseVTG(f) {
     course: num(f[1]),
     speedKn: num(f[5]),
     speedKmh: num(f[7]),
+  };
+}
+
+function parsePPICO(f) {
+  // $PPICO,seq,rx,ng,drop,txok,txng（Pico 起動からの累計カウンタ）
+  return {
+    seq: num(f[1]), // 統計文の通し番号（欠落検出用）
+    rx: num(f[2]), // UART 受信行数
+    ng: num(f[3]), // うちチェックサム NG
+    drop: num(f[4]), // バッファ破棄回数
+    txok: num(f[5]), // BLE 送信完了行数（$PPICO 含む）
+    txng: num(f[6]), // BLE 送信破棄行数
   };
 }
 

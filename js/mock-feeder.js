@@ -55,6 +55,11 @@ export class MockFeeder {
     // 箕面大滝付近の基準座標
     this.lat = 34.853667;
     this.lon = 135.472041;
+    // $PPICO 模擬用カウンタ（実機の main.py と同じ意味。欠落ゼロの健全な Pico を演じる）
+    this.tickCount = 0;
+    this.ppicoSeq = 0;
+    this.picoRx = 0; // UART 受信行数相当（= 生成した NMEA 行数）
+    this.picoTxok = 0; // BLE 送信行数相当（$PPICO 含む）
   }
 
   start() {
@@ -106,6 +111,18 @@ export class MockFeeder {
     lines.push(...gsvLines('GA', [[2, 62, 45], [5, 28, 130], [24, 47, 250], [31, 18, 300]])); // Galileo
     lines.push(...gsvLines('GB', [[14, 70, 200], [27, 33, 20], [33, 25, 160], [44, 52, 280]])); // BeiDou
     lines.push(...gsvLines('GQ', [[193, 70, 150], [194, 60, 210]])); // QZSS（みちびき）
+
+    // 5秒ごとに $PPICO（受信品質カウンタ）を模擬配信。実機同様、先行行を
+    // カウントしてから snapshot → 送信の順（txok は自身を含まない）。
+    // 欠落ゼロなので、アプリ側の「BLE欠落（推定）」は 0 になるはず。
+    this.tickCount++;
+    this.picoRx += lines.length;
+    this.picoTxok += lines.length;
+    if (this.tickCount % 5 === 0) {
+      this.ppicoSeq++;
+      lines.push(nmeaLine(`PPICO,${this.ppicoSeq},${this.picoRx},0,0,${this.picoTxok},0`));
+      this.picoTxok++; // $PPICO 自身の送信分
+    }
 
     const text = lines.join('\r\n') + '\r\n';
 

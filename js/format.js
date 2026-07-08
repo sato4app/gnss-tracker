@@ -59,10 +59,25 @@ export function nextPointLabel(labels, now = new Date()) {
   return `${prefix}${p(max + 1)}`;
 }
 
+// 測定区間の受信品質（recorder.js が summary.rxStats に残す差分）→ 表示テキスト。
+// 「M10S→Pico / Pico→アプリ で取りこぼしなく処理できたか」を1回の測定単位で示す。
+export function rxStatsText(rx) {
+  if (!rx) return '';
+  const picoLine = rx.pico
+    ? `Pico: UART受信 ${rx.pico.rx} 行（NG ${rx.pico.ng}）　破棄 バッファ${rx.pico.drop}回/BLE${rx.pico.txng}行`
+    : 'Pico統計（$PPICO）なし';
+  return [
+    `受信品質: ${rx.lines} 行（CS NG ${rx.csNg} / 未対応 ${rx.unknown} / 破棄 ${rx.discardedChars} 字）`,
+    `エポック欠落 ${rx.epochGaps} / GSV部分欠落 ${rx.gsvMissing} / BLE欠落(推定) ${rx.bleLossEst != null ? `${rx.bleLossEst} 行` : '—'}`,
+    picoLine,
+  ].join('\n');
+}
+
 // 静的測位セッションの集計テキスト（記録結果パネル表示用）
 export function formatStats(session, st) {
   const fixLine = Object.entries(st.fixCounts).map(([q, n]) => `fix${q}:${n}`).join(' ');
   const reasonLine = stopReasonText(session.summary?.stopReason);
+  const rxText = rxStatsText(session.summary?.rxStats);
   return [
     ...(reasonLine ? [reasonLine] : []),
     `【${session.label}】 収集 ${st.count} エポック`,
@@ -72,6 +87,7 @@ export function formatStats(session, st) {
     `CEP50 ${st.cep50?.toFixed(2)} m / CEP95 ${st.cep95?.toFixed(2)} m`,
     `標高: 平均 ${st.altMean != null ? st.altMean.toFixed(1) : '—'} m ± ${st.altStd != null ? st.altStd.toFixed(1) : '—'} m`,
     `fix内訳: ${fixLine}　平均HDOP ${st.avgHdop != null ? st.avgHdop.toFixed(1) : '—'}　平均衛星数 ${st.avgSats != null ? st.avgSats.toFixed(1) : '—'}`,
+    ...(rxText ? [rxText] : []),
   ].join('\n');
 }
 

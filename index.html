@@ -40,6 +40,21 @@
         <div><dt>測位状態</dt><dd><span id="fix-badge" class="fix-badge bad">No fix</span></dd></div>
         <div><dt>最終受信</dt><dd id="last-recv" class="mono">—</dd></div>
       </dl>
+      <div class="sub-head">受信品質（接続/リセットからの累計）</div>
+      <dl class="grid">
+        <div><dt>受信行数 / CS NG</dt><dd id="rx-lines" class="mono">0 / 0</dd></div>
+        <div><dt>未対応文 / 破棄文字</dt><dd id="rx-unknown" class="mono">0 / 0</dd></div>
+        <div><dt>エポック / 欠落</dt><dd id="rx-epochs" class="mono">0 / 0</dd></div>
+        <div><dt>GSV部分欠落</dt><dd id="rx-gsv" class="mono">0</dd></div>
+        <div><dt>BLE欠落（推定）</dt><dd id="rx-ble" class="mono">—</dd></div>
+        <div><dt>Pico統計 $PPICO</dt><dd id="rx-ppico" class="mono">未受信</dd></div>
+        <div><dt>Pico UART受信 / NG</dt><dd id="rx-pico-uart" class="mono">—</dd></div>
+        <div><dt>Pico破棄 バッファ/BLE</dt><dd id="rx-pico-drop" class="mono">—</dd></div>
+      </dl>
+      <div class="conn-bar">
+        <button id="btn-rxstats-reset" class="btn">統計リセット</button>
+      </div>
+      <div class="note-dim">チェックサムNG行・未対応センテンスは件数を記録して破棄します。「BLE欠落（推定）」は Pico の送信数（$PPICO）とアプリの受信行数の差です。</div>
       <div class="note-dim">BLE（Bluetooth）で GNSS レシーバへ接続します。実機がない場合は「設定」タブの「モックNMEA配信」をご利用ください。</div>
     </div>
 

@@ -4,8 +4,9 @@
 const NMEA_END = /\*[0-9A-Fa-f]{2}$/; // 完結した NMEA 文の末尾（チェックサム）
 
 export class LineBuffer {
-  constructor() {
+  constructor({ onDiscard } = {}) {
     this.buf = '';
+    this.onDiscard = onDiscard || (() => {}); // 溢れ破棄時に文字数を通知（受信品質統計用）
   }
 
   // チャンク文字列を投入し、完成した行（空行除く）の配列を返す
@@ -29,8 +30,11 @@ export class LineBuffer {
       this.buf = '';
     }
 
-    // 暴走防止：行にならないゴミが溜まり続けたら捨てる
-    if (this.buf.length > 4096) this.buf = '';
+    // 暴走防止：行にならないゴミが溜まり続けたら捨てる（捨てた文字数は通知）
+    if (this.buf.length > 4096) {
+      this.onDiscard(this.buf.length);
+      this.buf = '';
+    }
 
     return out;
   }

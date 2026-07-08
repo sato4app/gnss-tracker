@@ -60,6 +60,7 @@ export class EpochAssembler {
       inViewCount: {}, // constellation -> 衛星数
       sentenceTypes: {}, // 種別カウント（品質統計用）
       invalidCount: 0,
+      gsvGroups: {}, // `talker:signalId` -> { total, seen:Set } GSV 完全性チェック用
     };
   }
 
@@ -93,10 +94,16 @@ export class EpochAssembler {
         if (s.vdop != null) c.vdop = s.vdop;
         for (const prn of s.usedSVs) c.usedSVs.push({ constellation: s.constellation, prn });
         break;
-      case 'GSV':
+      case 'GSV': {
         if (s.inView != null) c.inViewCount[s.constellation] = s.inView;
         for (const sat of s.sats) c.satsInView.push(sat);
+        // GSV は totalMsgs 分割で届く。msgNum の抜けを検出できるよう記録する。
+        const key = `${s.talker || '??'}:${s.signalId || ''}`;
+        const g = c.gsvGroups[key] || (c.gsvGroups[key] = { total: 0, seen: new Set() });
+        g.total = Math.max(g.total, s.totalMsgs || 1);
+        g.seen.add(s.msgNum || 1);
         break;
+      }
       case 'VTG':
         if (s.speedKmh != null) c.speedKmh = s.speedKmh;
         else if (s.speedKn != null) c.speedKmh = s.speedKn * 1.852;
@@ -140,6 +147,10 @@ export class EpochAssembler {
     const usedBySys = {};
     for (const u of c.usedSVs) usedBySys[u.constellation] = (usedBySys[u.constellation] || 0) + 1;
 
+    // GSV の部分欠落（総メッセージ数に対して届かなかった msgNum の数）
+    let gsvMissing = 0;
+    for (const g of Object.values(c.gsvGroups)) gsvMissing += Math.max(0, g.total - g.seen.size);
+
     return {
       t: this._buildDate(c.time),
       time: c.time,
@@ -166,6 +177,7 @@ export class EpochAssembler {
       altStd: c.altStd,
       invalidCount: c.invalidCount,
       sentenceTypes: c.sentenceTypes,
+      gsvMissing,
     };
   }
 

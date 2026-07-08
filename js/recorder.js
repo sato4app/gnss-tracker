@@ -4,7 +4,9 @@
 //       autoStop 有効時は「最低 minSec 秒 → 中心・DRMS が holdSec 秒横ばい」で自動停止
 //       （docs/static-autostop-202607.md）。maxSec/maxEpochs はタイムアウト（保険）として併用。
 // 保存先は IndexedDB（storage.js）。集計は accuracy.js の computeStaticStats。
+// 静的測位は測定区間の受信品質（rxStats）も summary に残す（docs/rx-integrity-202607.md）。
 import { computeStaticStats, evaluateConvergence } from './accuracy.js';
+import { diffRxStats } from './stream-stats.js';
 
 // 収束自動停止の判定パラメータ（設定画面には出さないモジュール定数）
 const CONVERGENCE = { holdSec: 10, centerTolM: 0.3, drmsTolAbsM: 0.3, drmsTolPct: 0.05 };
@@ -36,10 +38,11 @@ function toSample(epoch) {
 }
 
 export class Recorder {
-  constructor(storage, { onStaticUpdate, onStaticStop } = {}) {
+  constructor(storage, { onStaticUpdate, onStaticStop, getRxStats } = {}) {
     this.storage = storage;
     this.onStaticUpdate = onStaticUpdate || (() => {}); // 収集中のライブ表示更新
     this.onStaticStop = onStaticStop || (() => {}); // 自動停止を含む停止通知
+    this.getRxStats = getRxStats || null; // 受信品質統計の snapshot 提供元（app.js）
     this.latestEpoch = null;
     this.static = null; // 収集中: { label, memo, startedAt, samples, maxSec, maxEpochs, paused }
   }
@@ -136,6 +139,7 @@ export class Recorder {
       autoStop, // 収束自動停止の有効/無効
       minSec, // 最低収集時間 [秒]（これ未満では絶対に停止しない）
       convHistory: [], // [{ t, lat, lon, drms }] 品質ゲート通過エポックのみ
+      rxStart: this.getRxStats ? this.getRxStats() : null, // 受信品質の測定開始時点
     };
     this.onStaticUpdate({ count: 0, elapsedSec: 0, stats: null, convergence: null });
   }
@@ -146,6 +150,8 @@ export class Recorder {
     this.static = null;
 
     const stats = computeStaticStats(st.samples);
+    // この測定区間の受信品質（開始時点との差分）。取りこぼし確認用。
+    const rxStats = this.getRxStats ? diffRxStats(this.getRxStats(), st.rxStart) : null;
     const id = `static_${Date.now()}`;
     const session = {
       id,
@@ -164,8 +170,9 @@ export class Recorder {
             cep50: stats.cep50,
             cep95: stats.cep95,
             stopReason: reason, // 'converged' | 'timeout' | 'maxEpochs' | 'manual'
+            rxStats,
           }
-        : { count: 0, stopReason: reason },
+        : { count: 0, stopReason: reason, rxStats },
     };
     await this.storage.putSession(session);
     await this.storage.putPoint({
