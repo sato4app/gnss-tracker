@@ -169,6 +169,20 @@
       <div id="wakelock-state" class="note-dim">Wake Lock: —</div>
     </div>
 
+    <!-- 5. 情報 -->
+    <div class="tab-page" id="page-info" hidden>
+      <div class="sub-head">アプリのバージョン（Service Worker キャッシュ）</div>
+      <dl class="grid">
+        <div><dt>現行（動作中）</dt><dd id="info-sw-current" class="mono">—</dd></div>
+        <div><dt>最新（サーバー）</dt><dd id="info-sw-latest" class="mono">—</dd></div>
+      </dl>
+      <div id="info-update-state" class="note-dim"></div>
+      <div class="conn-bar" style="margin-top: 10px">
+        <button id="btn-update-check" class="btn">更新を確認</button>
+        <button id="btn-update-apply" class="btn primary" hidden>アプリを更新</button>
+      </div>
+    </div>
+
         </div><!-- /overlay-body -->
       </div><!-- /overlay-sheet -->
     </div><!-- /overlay -->
@@ -181,6 +195,7 @@
     <button class="tab" data-page="analysis">解析</button>
     <button class="tab" data-page="record">記録</button>
     <button class="tab" data-page="settings">設定</button>
+    <button class="tab" data-page="info">情報</button>
   </nav>
 
   <script src="vendor/leaflet/leaflet.js"></script>

@@ -1,7 +1,7 @@
 // Service Worker：アプリシェルのプリキャッシュ＋地理院地図タイルのキャッシュ。
 // タイルは cache-first（オフラインでもキャッシュ済範囲の地図が出る）。
 // タイルキャッシュ名は js/tile-cache.js の事前ダウンロードと共有する。
-const SHELL_CACHE = 'gnss-shell-v6';
+const SHELL_CACHE = 'gnss-shell-v7';
 const TILE_CACHE = 'gsi-tiles';
 
 const APP_SHELL = [
@@ -30,6 +30,7 @@ const APP_SHELL = [
   './js/format.js',
   './js/settings-ui.js',
   './js/tile-ui.js',
+  './js/info-ui.js',
   './vendor/leaflet/leaflet.js',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/images/marker-icon.png',
@@ -63,8 +64,18 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// 情報タブからのバージョン問い合わせに応答する（js/info-ui.js）
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'GET_VERSION') {
+    event.ports[0]?.postMessage({ version: SHELL_CACHE });
+  }
+});
+
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+
+  // sw.js 自体はキャッシュしない（情報タブの「最新バージョン」確認を妨げないため）
+  if (url.origin === self.location.origin && url.pathname.endsWith('/sw.js')) return;
 
   // 地理院地図タイル：cache-first。未キャッシュ時のみ取得し TILE_CACHE へ格納。
   if (url.hostname === 'cyberjapandata.gsi.go.jp') {

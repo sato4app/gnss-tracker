@@ -21,6 +21,7 @@ import { TileCache } from './tile-cache.js';
 import { fmt, escapeHtml, FIX_MODE, fixBadge, formatStats, sessionSubText, nextPointLabel } from './format.js';
 import { initSettingsUI } from './settings-ui.js';
 import { initTileUI } from './tile-ui.js';
+import { initInfoUI } from './info-ui.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -317,7 +318,7 @@ async function main() {
     .join('');
 
   // ---- 下部ボタン → オーバーレイ開閉 ----
-  const PAGE_TITLES = { connect: '接続', live: 'ライブ', analysis: '解析', record: '記録', settings: '設定' };
+  const PAGE_TITLES = { connect: '接続', live: 'ライブ', analysis: '解析', record: '記録', settings: '設定', info: '情報' };
   const overlayEl = $('overlay');
   let activePage = null;
 
@@ -330,6 +331,7 @@ async function main() {
     overlayEl.hidden = false;
     document.querySelectorAll('#tabbar .tab').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
     if (page === 'record') refreshSessionList();
+    if (page === 'info') infoUI.refresh(); // 開くたびにバージョンを確認（更新があれば confirm）
     // 表示直後はキャンバスのサイズが確定しているので、最新エポックで即再描画する
     if (latestEpoch) requestAnimationFrame(() => latestEpoch && render(latestEpoch));
   }
@@ -496,6 +498,7 @@ async function main() {
   // ---- 設定タブ / タイル事前ダウンロード（UI 配線は各モジュールへ委譲） ----
   initSettingsUI({ $, settings, storage, mapView, defaults: DEFAULT_SETTINGS });
   initTileUI({ $, tileCache, storage, getMapType: () => settings.mapType });
+  const infoUI = initInfoUI({ $ });
 
   // ---- Service Worker 登録（PWA / オフライン） ----
   if ('serviceWorker' in navigator) {
